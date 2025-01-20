@@ -105,6 +105,15 @@ class User(AbstractBaseUser):
         self.billing_key = new_key
         self.save()
 
+
+    def get_subscription_price(self):
+        """
+        현재 사용자의 구독 플랜에 따라 금액 반환
+        """
+        if not self.subscription_plan:
+            return 0.00  # 구독 플랜이 없는 경우 기본 값
+        return self.subscription_plan.price
+
     # 탈퇴 시 비활성화
     def deactivate(self):
         self.is_active = False
