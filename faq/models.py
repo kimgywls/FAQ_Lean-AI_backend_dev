@@ -1,6 +1,8 @@
 from django.db import models
 from django.utils.text import slugify
 from django.conf import settings
+from encrypted_model_fields.fields import EncryptedCharField
+from django.core.exceptions import ValidationError
 import os
 import json
 
@@ -21,6 +23,39 @@ def banner_upload_path(instance, filename):
 
 def menu_image_upload_path(instance, filename):
     return os.path.join(f'menu_images/store_{instance.store.store_id}', filename)
+
+
+class SubscriptionPlan(models.Model):
+    PLAN_CHOICES = [
+        ('FREE', '무료'),
+        ('BASIC', '기본'),
+        ('ENTERPRISE', '엔터프라이즈'),
+    ]
+    PLAN_PRICES = {
+        'FREE': 0.00,
+        'BASIC': 9900.00,
+        'ENTERPRISE': 500000.00,
+    }
+
+    plan_type = models.CharField(max_length=20, choices=PLAN_CHOICES, unique=True)
+    price = models.DecimalField(max_digits=10, decimal_places=2)  # 가격
+    description = models.TextField(blank=True, null=True)  # 설명
+    created_at = models.DateTimeField(auto_now_add=True)  # 생성 날짜
+    updated_at = models.DateTimeField(auto_now=True)  # 업데이트 날짜
+
+    def clean(self):
+        # 플랜 유형에 따른 가격 검증
+        expected_price = self.PLAN_PRICES.get(self.plan_type)
+        if expected_price is not None and self.price != expected_price:
+            raise ValidationError(f"{self.get_plan_type_display()} 플랜의 가격은 {expected_price}원이어야 합니다.")
+
+    def save(self, *args, **kwargs):
+        self.clean()  # 검증 로직 실행
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.get_plan_type_display()} - {self.price}원"
+
 
 
 # 기존 UserManager, User, Store 모델은 그대로 유지
@@ -51,7 +86,9 @@ class User(AbstractBaseUser):
     marketing = models.CharField(max_length=1, choices=[('Y', 'Yes'), ('N', 'No')], default='N')
     
     push_token = models.CharField(max_length=255, null=True, blank=True)
-    
+    billing_key = EncryptedCharField(max_length=255, null=True, blank=True)  # 결제 키
+    subscription_plan = models.ForeignKey(SubscriptionPlan, on_delete=models.SET_NULL, null=True, blank=True)  # 구독 유형
+
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     is_superuser = models.BooleanField(default=False)
@@ -61,6 +98,13 @@ class User(AbstractBaseUser):
     USERNAME_FIELD = 'username'  # 사용자 인증에 사용되는 필드
     REQUIRED_FIELDS = ['email']  # 슈퍼유저 생성 시 필수 필드
 
+    def update_billing_key(self, new_key):
+        """
+        Billing Key를 업데이트하는 헬퍼 메서드
+        """
+        self.billing_key = new_key
+        self.save()
+
     # 탈퇴 시 비활성화
     def deactivate(self):
         self.is_active = False
@@ -68,7 +112,6 @@ class User(AbstractBaseUser):
 
     def __str__(self):
         return self.username
-    
 
 class Store(models.Model):
     STORE_CATEGORIES = [
@@ -149,3 +192,19 @@ class Menu(models.Model):
     allergy = models.TextField(null=True, blank=True)
     menu_introduction = models.TextField(blank=True, null=True)
     origin = models.TextField(blank=True, null=True)
+
+
+class PaymentHistory(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="payment_history")  # 사용자 연결
+    customer_uid = models.CharField(max_length=100)  # 고객 UID
+    merchant_uid = models.CharField(max_length=100, unique=True)  # 고유 주문 번호
+    amount = models.DecimalField(max_digits=10, decimal_places=2)  # 결제 금액
+    status = models.CharField(max_length=20)  # 결제 상태 (예: "paid", "failed")
+    created_at = models.DateTimeField(auto_now_add=True)  # 결제 생성 시간
+
+    def __str__(self):
+        return f"{self.user.username} - {self.merchant_uid}"
+    
+    class Meta:
+        ordering = ["-created_at"]
+

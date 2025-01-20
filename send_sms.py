@@ -29,6 +29,8 @@ def send_aligo_sms(receiver, message):
             return True
         else:
             logger.error(f"SMS 발송 실패: {response_data}")
+            logger.error(f"SMS 발송 실패: {response_data}")
+            logger.error(f"API 응답 내용: {response.text}")
             return False
     except Exception as e:
         logger.error(f"SMS 발송 중 오류 발생: {e}")

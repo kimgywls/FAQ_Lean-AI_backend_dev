@@ -38,6 +38,9 @@ class UserProfileView(APIView):
         )
         banner_url = store.banner.url if store and store.banner else ""
 
+        subscription_plan = user.subscription_plan
+        subscription_price = subscription_plan.price if subscription_plan else 0  # 플랜 가격 가져오기
+
         response_data = {
             'profile_photo': profile_photo_url,
             'name': user.name,
@@ -49,6 +52,9 @@ class UserProfileView(APIView):
             'qr_code_url': qr_code_url,
             'banner_url': banner_url,
             'marketing': user.marketing,
+            'billing_key': user.billing_key,
+            'subscription_plan': user.subscription_plan.plan_type if user.subscription_plan else '',
+            'subscription_price': subscription_price,
         }
         logger.debug(f"Response data: {response_data}")
 
@@ -79,6 +85,7 @@ class UserProfileView(APIView):
             store.store_address = data.get('business_address', store.store_address)
             store.save()
             logger.debug(f"Store updated for user {user.username}: {store}")
+            
 
         response_data = {
             'message': 'User profile updated successfully',
@@ -91,6 +98,9 @@ class UserProfileView(APIView):
             'business_address': store.store_address if store else "",
             'marketing': user.marketing,
             'store_introduction': store.store_introduction if store else '',
+            'billing_key': user.billing_key,
+            'subscription_plan': user.subscription_plan.plan_type if user.subscription_plan else '',
+            'subscription_price': user.subscription_plan.price if user.subscription_plan else 0
         }
         logger.debug(f"Response data after update: {response_data}")
 

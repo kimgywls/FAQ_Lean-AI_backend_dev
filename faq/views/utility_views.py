@@ -6,7 +6,7 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-import logging, os, qrcode
+import requests, logging, os, qrcode, uuid
 from ..merged_csv import merge_csv_files
 from ..analyze_utterances import get_most_common_utterances
 from ..analyze_utterances import save_most_common_utterances_graph

@@ -4,5 +4,6 @@ from .store_urls import urlpatterns as store_urls
 from .menu_urls import urlpatterns as menu_urls
 from .user_urls import urlpatterns as user_urls
 from .utility_urls import urlpatterns as utility_urls
+from .payment_urls import urlpatterns as payment_urls
 
-urlpatterns = auth_urls + store_urls + menu_urls + user_urls + utility_urls
+urlpatterns = auth_urls + store_urls + menu_urls + user_urls + utility_urls + payment_urls

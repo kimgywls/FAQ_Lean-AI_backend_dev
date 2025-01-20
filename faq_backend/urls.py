@@ -3,7 +3,6 @@ from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
 from django.http import HttpResponse
-from webhook import views
 
 def home(request):
     return HttpResponse("Welcome to the homepage.")
@@ -13,7 +12,8 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include('faq.urls')),  # FAQ 앱 관련 API
     path('public/', include('faq_public.urls')),
-    path('webhook/', views.webhook, name='webhook'),
+    path('public/', include('webhook.urls')),
+
 ]
 
 if settings.DEBUG:
