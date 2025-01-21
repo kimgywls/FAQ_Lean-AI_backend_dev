@@ -86,7 +86,13 @@ class User(AbstractBaseUser):
     marketing = models.CharField(max_length=1, choices=[('Y', 'Yes'), ('N', 'No')], default='N')
     
     push_token = models.CharField(max_length=255, null=True, blank=True)
-    billing_key = EncryptedCharField(max_length=255, null=True, blank=True)  # 결제 키
+    billing_key = models.OneToOneField(
+        'BillingKey',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='user_billing_key'
+    )  # 결제 키
     subscription_plan = models.ForeignKey(SubscriptionPlan, on_delete=models.SET_NULL, null=True, blank=True)  # 구독 유형
 
     is_active = models.BooleanField(default=True)
@@ -97,14 +103,6 @@ class User(AbstractBaseUser):
 
     USERNAME_FIELD = 'username'  # 사용자 인증에 사용되는 필드
     REQUIRED_FIELDS = ['email']  # 슈퍼유저 생성 시 필수 필드
-
-    def update_billing_key(self, new_key):
-        """
-        Billing Key를 업데이트하는 헬퍼 메서드
-        """
-        self.billing_key = new_key
-        self.save()
-
 
     def get_subscription_price(self):
         """
@@ -203,16 +201,42 @@ class Menu(models.Model):
     origin = models.TextField(blank=True, null=True)
 
 
-class PaymentHistory(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="payment_history")  # 사용자 연결
-    customer_uid = models.CharField(max_length=100)  # 고객 UID
-    merchant_uid = models.CharField(max_length=100, unique=True)  # 고유 주문 번호
+class BillingKey(models.Model):
+    user = models.OneToOneField(
+        'User',
+        on_delete=models.CASCADE,
+        related_name='billing'
+    )
+    customer_uid = models.CharField(max_length=255, unique=True)  # PG에서 발급한 고유 ID
+    imp_uid = models.CharField(max_length=255, blank=True, null=True)  # 마지막 결제 고유 ID
+    plan = models.CharField(max_length=50)  # 구독 플랜 (예: BASIC, ENTERPRISE)
     amount = models.DecimalField(max_digits=10, decimal_places=2)  # 결제 금액
-    status = models.CharField(max_length=20)  # 결제 상태 (예: "paid", "failed")
-    created_at = models.DateTimeField(auto_now_add=True)  # 결제 생성 시간
+    next_payment_date = models.DateField(blank=True, null=True)  # 다음 결제 예정일
+    created_at = models.DateTimeField(auto_now_add=True)  # 빌링키 생성일
 
     def __str__(self):
-        return f"{self.user.username} - {self.merchant_uid}"
+        return f"{self.user.username} - {self.customer_uid}"
+
+
+
+class PaymentHistory(models.Model):
+    user = models.ForeignKey(
+        'User',
+        on_delete=models.CASCADE,
+        related_name='payment_history'
+    )
+    billing_key = models.ForeignKey(
+        'BillingKey',
+        on_delete=models.SET_NULL,
+        null=True
+    )
+    imp_uid = models.CharField(max_length=255)  # 결제 고유 ID
+    amount = models.DecimalField(max_digits=10, decimal_places=2)  # 결제 금액
+    status = models.CharField(max_length=50)
+    created_at = models.DateTimeField(auto_now_add=True)  # 결제 시각
+
+    def __str__(self):
+        return f"{self.user.username} - {self.imp_uid} ({self.status})"
     
     class Meta:
         ordering = ["-created_at"]
