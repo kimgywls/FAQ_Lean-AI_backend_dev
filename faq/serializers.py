@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import User, Store, Edit, Menu
+from .models import User, Store, Edit, Menu, BillingKey
 from rest_framework.exceptions import ValidationError
 from django.contrib.auth.hashers import make_password
 from django.conf import settings
@@ -24,11 +24,26 @@ def validate_file(value, allowed_extensions, max_file_size, error_message_prefix
     return None  # 오류가 없는 경우
 
 
+class BillingKeySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BillingKey
+        fields = [
+            "customer_uid",
+            "imp_uid",
+            "plan",
+            "amount",
+            "next_payment_date",
+            "created_at",
+        ]
+
+
 # 유저 관련 시리얼라이저
 class UserSerializer(serializers.ModelSerializer):
+    billing_key = BillingKeySerializer()
+
     class Meta:
         model = User
-        fields = ['user_id', 'username', 'password', 'name', 'dob', 'phone', 'email', 'profile_photo', 'created_at', 'marketing']
+        fields = ['user_id', 'username', 'password', 'name', 'dob', 'phone', 'email', 'profile_photo', 'created_at', 'marketing', 'billing_key']
         extra_kwargs = {
             'password': {'write_only': True},  # 비밀번호는 쓰기 전용으로 설정
             'email': {'required': False}  # 이메일은 필수가 아님
@@ -199,5 +214,4 @@ class MenuSerializer(serializers.ModelSerializer):
             # 이미지 URL에 MEDIA_URL을 추가하여 반환
             representation['image'] = f"{settings.MEDIA_URL}{instance.image}"
         return representation
-
 
