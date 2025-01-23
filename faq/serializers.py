@@ -1,6 +1,5 @@
 from rest_framework import serializers
 from .models import User, Store, Edit, Menu, BillingKey
-from rest_framework.exceptions import ValidationError
 from django.contrib.auth.hashers import make_password
 from django.conf import settings
 import re
@@ -30,10 +29,10 @@ class BillingKeySerializer(serializers.ModelSerializer):
         fields = [
             "customer_uid",
             "imp_uid",
+            "merchant_uid",
             "plan",
             "amount",
-            "next_payment_date",
-            "created_at",
+            "created_at",   
         ]
 
 

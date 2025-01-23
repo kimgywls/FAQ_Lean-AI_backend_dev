@@ -39,8 +39,8 @@ class UserProfileView(APIView):
         )
         banner_url = store.banner.url if store and store.banner else ""
 
-        subscription_plan = user.subscription_plan.plan_type
-        billing_key_data = BillingKeySerializer(user.billing_key).data
+        subscription_plan = user.subscription_plan.plan_type if user.subscription_plan else None
+        billing_key_data = BillingKeySerializer(user.billing_key).data if user.billing_key else None
 
         response_data = {
             'profile_photo': profile_photo_url,
@@ -54,7 +54,7 @@ class UserProfileView(APIView):
             'banner_url': banner_url,
             'marketing': user.marketing,
             'billing_key': billing_key_data,
-            'subscription_plan': subscription_plan if subscription_plan else '',
+            'subscription_plan': subscription_plan
         }
         logger.debug(f"Response data: {response_data}")
 
@@ -86,8 +86,8 @@ class UserProfileView(APIView):
             store.save()
             logger.debug(f"Store updated for user {user.username}: {store}")
         
-        subscription_plan = user.subscription_plan.plan_type
-        billing_key_data = BillingKeySerializer(user.billing_key).data
+        subscription_plan = user.subscription_plan.plan_type if user.subscription_plan else None
+        billing_key_data = BillingKeySerializer(user.billing_key).data if user.billing_key else None
 
         response_data = {
             'message': 'User profile updated successfully',
@@ -101,7 +101,7 @@ class UserProfileView(APIView):
             'marketing': user.marketing,
             'store_introduction': store.store_introduction if store else '',
             'billing_key': billing_key_data,
-            'subscription_plan': subscription_plan if subscription_plan else '',
+            'subscription_plan': subscription_plan 
         }
         logger.debug(f"Response data after update: {response_data}")
 

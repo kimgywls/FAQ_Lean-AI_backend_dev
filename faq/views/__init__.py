@@ -4,4 +4,4 @@ from .user_views import UserProfileView, UserProfilePhotoUpdateView, PushTokenVi
 from .store_views import StoreViewSet, FeedViewSet
 from .menu_views import MenuViewSet
 from .utility_views import GenerateQrCodeView, QrCodeImageView, StatisticsView, RequestServiceView
-from .payment_views import BillingKeySaveView, BillingKeyChangeView, PaymentHistoryView, CardInfoView, BillingKeyDeleteView, CancelPaymentScheduleView
+from .payment_views import BillingKeySaveView, BillingKeyChangeView, PaymentHistoryView, CardInfoView, BillingKeyDeleteView, CancelPaymentScheduleView, PaymentWebhookView

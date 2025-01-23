@@ -1,10 +1,11 @@
 from django.db import models
 from django.utils.text import slugify
 from django.conf import settings
-from encrypted_model_fields.fields import EncryptedCharField
 from django.core.exceptions import ValidationError
 import os
 import json
+from datetime import timedelta
+
 
 # User 모델을 관리하는 매니저 클래스 및 커스텀 User 모델
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager
@@ -209,10 +210,20 @@ class BillingKey(models.Model):
     )
     customer_uid = models.CharField(max_length=255, unique=True)  # PG에서 발급한 고유 ID
     imp_uid = models.CharField(max_length=255, blank=True, null=True)  # 마지막 결제 고유 ID
+    merchant_uid = models.CharField(max_length=255, blank=True, null=True)  # 주문 ID
     plan = models.CharField(max_length=50)  # 구독 플랜 (예: BASIC, ENTERPRISE)
     amount = models.DecimalField(max_digits=10, decimal_places=2)  # 결제 금액
-    next_payment_date = models.DateField(blank=True, null=True)  # 다음 결제 예정일
     created_at = models.DateTimeField(auto_now_add=True)  # 빌링키 생성일
+    subscription_cycle = models.PositiveIntegerField(default=2)
+    is_active = models.BooleanField(default=True)  # 활성 상태 플래그
+
+    def deactivate(self):
+        """
+        빌링키를 비활성화합니다.
+        """
+        self.is_active = False
+        self.save()
+
 
     def __str__(self):
         return f"{self.user.username} - {self.customer_uid}"
@@ -231,9 +242,12 @@ class PaymentHistory(models.Model):
         null=True
     )
     imp_uid = models.CharField(max_length=255)  # 결제 고유 ID
+    merchant_uid = models.CharField(max_length=255, unique=True)  # 주문 ID
     amount = models.DecimalField(max_digits=10, decimal_places=2)  # 결제 금액
     status = models.CharField(max_length=50)
     created_at = models.DateTimeField(auto_now_add=True)  # 결제 시각
+    scheduled_at = models.DateTimeField(null=True, blank=True)  # 예약 결제 시간
+
 
     def __str__(self):
         return f"{self.user.username} - {self.imp_uid} ({self.status})"

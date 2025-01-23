@@ -10,6 +10,7 @@ local_settings.py
 faq_backend/settings.py
 faq_db.sqlite3
 faq_public_db.sqlite3
+faq_db_no_billingkey.sqlite3
 db.sqlite3-journal
 media
 my_settings.py

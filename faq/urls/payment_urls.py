@@ -6,7 +6,8 @@ from ..views import (
     PaymentHistoryView,
     CardInfoView,
     BillingKeyDeleteView,  
-    CancelPaymentScheduleView
+    CancelPaymentScheduleView,
+    PaymentWebhookView
 )
 
 urlpatterns = [
@@ -15,5 +16,6 @@ urlpatterns = [
     path('billing-key-delete/', BillingKeyDeleteView.as_view(), name='billing_key_delete'),
     path('payment-history/', PaymentHistoryView.as_view(), name='payment_history'),
     path('card-info/', CardInfoView.as_view(), name='card_info'),
-    path('cancel-payment-schedule/', CancelPaymentScheduleView.as_view(), name='cancel_payment_schedule'),
+    path('schedule-cancel-payment/', CancelPaymentScheduleView.as_view(), name='schedule_cancel_payment'),
+    path('payment-webhook/', PaymentWebhookView.as_view(), name='payment_webhook'),
 ]

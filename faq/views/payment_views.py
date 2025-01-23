@@ -1,104 +1,17 @@
-from django.conf import settings
+# payment_views.py
+from django.db import transaction
+from rest_framework.exceptions import ValidationError
 from rest_framework import status
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from datetime import timedelta, datetime
-from django.utils.timezone import now
-import requests
+from dateutil.relativedelta import relativedelta
+import requests 
 from ..models import PaymentHistory, SubscriptionPlan, BillingKey
-
-# 포트원 API 토큰 발급
-def get_portone_access_token():
-    try:
-        response = requests.post(
-            "https://api.iamport.kr/users/getToken",
-            json={
-                "imp_key": settings.PORTONE_IMP_KEY,
-                "imp_secret": settings.PORTONE_IMP_SECRET,
-            },
-        )
-        response.raise_for_status()
-        access_token = response.json()["response"]["access_token"]
-        return access_token
-    except requests.exceptions.RequestException as e:
-        raise Exception(f"포트원 API 토큰 발급 실패: {str(e)}")
-    
-    
-# 포트원 결제 검증
-def verify_payment(imp_uid, access_token):
-    """
-    포트원 결제 검증
-    """
-    
-    url = f"https://api.iamport.kr/payments/{imp_uid}"
-    headers = {"Authorization": f"Bearer {access_token}"}
-    response = requests.get(url, headers=headers)
-
-    if response.status_code == 200:
-        return response.json()['response']
-    return None
-
-
-class PaymentHistoryView(APIView):
-    authentication_classes = [JWTAuthentication]
-    permission_classes = [IsAuthenticated]
-
-    def get_payment_history(self, access_token, user):
-        """
-        포트원에서 결제 내역을 가져옵니다.
-        """
-        url = "https://api.iamport.kr/payments/status/all"
-        headers = {"Authorization": f"Bearer {access_token}"}
-
-        params = {
-            "customer_uid": f"customer_{user.username}*",  # 사용자와 연관된 customer_uid 패턴
-        }
-
-        response = requests.get(url, headers=headers, params=params)
-        print("PortOne Response:", response.json())  # 응답 데이터 출력
-
-        if response.status_code == 200:
-            return response.json().get('response', {}).get('list', [])
-        return None
-
-    def get(self, request):
-        try:
-            user = request.user
-            # 포트원 API 토큰 가져오기
-            access_token = get_portone_access_token()
-
-            if not access_token:
-                print("Access token is None")
-                return Response({"success": False, "message": "포트원 인증 실패"}, status=401)
-
-            # 포트원 결제 내역 가져오기
-            payment_data = self.get_payment_history(access_token, user)
-
-            if not payment_data:
-                print("No payment data found")
-                return Response({"success": False, "message": "결제 내역이 없습니다."}, status=404)
-
-            # 결제 내역 저장
-            for payment in payment_data:
-                PaymentHistory.objects.update_or_create(
-                    imp_uid=payment['imp_uid'],
-                    defaults={
-                        'user': user,
-                        'billing_key': BillingKey.objects.filter(user=user).first(),
-                        'amount': payment['amount'],
-                        'status': payment['status'],
-                        'created_at': datetime.fromtimestamp(payment['paid_at']),  # 타임스탬프 변환
-                    }
-                )
-
-            return Response(data=payment_data, status=200)
-
-        except Exception as e:
-            import traceback
-            print("Error Traceback:", traceback.format_exc())  # 전체 스택 트레이스 출력
-            return Response({"success": False, "message": str(e)}, status=500)
+from ..serializers import BillingKeySerializer
+from ..utils import get_portone_access_token, verify_payment
 
 
 class CardInfoView(APIView):
@@ -109,17 +22,21 @@ class CardInfoView(APIView):
         user = request.user
 
         # BillingKey 조회
-        billing_key = BillingKey.objects.filter(user=user).first()
+        billing_key = BillingKey.objects.filter(user=user, is_active=True).first()
         if not billing_key:
+            # 카드 등록이 안 된 경우도 정상 응답으로 처리
             return Response(
-                {"error": "결제 정보가 존재하지 않습니다."},
-                status=status.HTTP_404_NOT_FOUND
+                {
+                    "message": "결제 정보가 없습니다. 카드를 등록해주세요.",
+                    "card_info": None,
+                },
+                status=status.HTTP_200_OK  # 404 대신 200으로 반환
             )
-            
+
         try:
             # 포트원 토큰 가져오기
             access_token = get_portone_access_token()
-
+            
             # billing_key에 연결된 카드 정보 조회
             card_response = requests.get(
                 f"https://api.iamport.kr/subscribe/customers/{billing_key.customer_uid}",
@@ -136,10 +53,45 @@ class CardInfoView(APIView):
             )
 
 
-class BillingKeySaveView(APIView):
+
+class PaymentHistoryView(APIView):
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
 
+    def get(self, request):
+        """
+        저장된 결제 내역을 조회합니다.
+        """
+        user = request.user
+        payment_histories = PaymentHistory.objects.filter(user=user).order_by('-created_at')
+
+        print(f"payment_histories : {payment_histories}")
+
+        if not payment_histories.exists():
+            return Response(
+                {"success": True, "message": "결제 내역이 없습니다.", "payment_data": []}, 
+                status=status.HTTP_200_OK
+            )
+
+        # 결제 내역 직렬화
+        data = [
+            {
+                "merchant_uid": payment.merchant_uid,
+                "amount": str(payment.amount),
+                "status": payment.status,
+                "created_at": payment.created_at,
+                "scheduled_at": payment.scheduled_at,
+            }
+            for payment in payment_histories
+        ]
+        print(f"data : {data}")
+
+        return Response({"success": True, "payment_data": data}, status=200)
+    
+
+class BillingKeySaveView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         user = request.user
@@ -150,54 +102,133 @@ class BillingKeySaveView(APIView):
 
         if not all([imp_uid, customer_uid, merchant_uid, plan]):
             return Response(
-                {"error": "필수 요청 데이터가 누락되었습니다."},
+                {"success": False, "message": "필수 요청 데이터가 누락되었습니다."},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
-        # SubscriptionPlan 객체 가져오기
+
         subscription_plan = SubscriptionPlan.objects.filter(plan_type__iexact=plan).first()
         if not subscription_plan:
             return Response(
-                {"error": f"'{plan}'에 해당하는 구독 플랜이 존재하지 않습니다."},
-                status=status.HTTP_400_BAD_REQUEST,
+                {"success": False, "message": f"'{plan}'에 해당하는 구독 플랜이 존재하지 않습니다."},
+                status=status.HTTP_400_BAD_REQUEST
             )
 
         try:
             access_token = get_portone_access_token()
-            print(f"Access Token: {access_token}")
-
-            # 포트원 결제 검증
             verified_payment = verify_payment(imp_uid, access_token)
-            print(f"Verified Payment: {verified_payment}")
 
-            # BillingKey 생성 또는 업데이트
-            billing_key, created = BillingKey.objects.update_or_create(
-                user=user,
-                defaults={
-                    'customer_uid': customer_uid,
-                    'merchant_uid': merchant_uid,
-                    'plan': subscription_plan.plan_type,
-                    'amount': subscription_plan.price, 
-                    'next_payment_date': datetime.now() + timedelta(days=30),
-                }
+            with transaction.atomic():
+                billing_key, created = BillingKey.objects.update_or_create(
+                    user=user,
+                    defaults={
+                        'customer_uid': customer_uid,
+                        'merchant_uid': merchant_uid,
+                        'imp_uid': imp_uid,
+                        'plan': subscription_plan.plan_type,
+                        'amount': subscription_plan.price,
+                        'is_active': True,
+
+                    }
+                )
+
+                # 첫 결제 기록 추가
+                PaymentHistory.objects.create(
+                    user=user,
+                    billing_key=billing_key,
+                    merchant_uid=merchant_uid,
+                    amount=subscription_plan.price,
+                    status='paid',  # 첫 결제는 완료 상태
+                )
+                
+                # 결제가 성공한 경우 구독 횟수 증가
+                billing_key.subscription_cycle += 1 
+                billing_key.save()
+
+
+                # 정기 결제 스케줄링 및 다음 결제 예정 내역 추가
+                schedule_response = self.schedule_recurring_payment(billing_key, 12)
+                if not schedule_response['success']:
+                    raise ValidationError(schedule_response['error'])
+
+                # 다음 달 결제 예정 내역 추가
+                if schedule_response.get("response") and isinstance(schedule_response["response"], list):
+                    first_schedule = schedule_response["response"][0]  # 리스트의 첫 번째 항목 사용
+                    print(f"first_schedule : {first_schedule}")
+                    PaymentHistory.objects.create(
+                        user=user,
+                        billing_key=billing_key,
+                        merchant_uid=first_schedule['merchant_uid'],
+                        amount=first_schedule['amount'],
+                        status='scheduled',  # 결제 예정 상태
+                        scheduled_at=datetime.fromtimestamp(first_schedule['schedule_at']),  # 타임스탬프를 datetime으로 변환
+                    )
+
+                user.subscription_plan = subscription_plan
+                user.billing_key = billing_key
+                user.save()
+
+            billing_key_data = BillingKeySerializer(billing_key).data
+            return Response({
+                "success": True,
+                "billing_key_data": billing_key_data,
+                "message": "결제가 성공적으로 완료되었습니다."
+            }, status=status.HTTP_201_CREATED)
+
+        except ValidationError as ve:
+            return Response({"success": False, "message": str(ve)}, status=status.HTTP_400_BAD_REQUEST)
+        except requests.exceptions.RequestException as re:
+            return Response({
+                "success": False,
+                "message": f"외부 결제 API와 통신 중 오류가 발생했습니다: {str(re)}"
+            }, status=status.HTTP_502_BAD_GATEWAY)
+        except Exception as e:
+            return Response(
+                {"success": False, "message": "시스템 오류가 발생했습니다. 잠시 후 다시 시도해주세요."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-            # 사용자 구독 플랜 업데이트
-            user.subscription_plan = subscription_plan  # 객체 할당
-            user.billing_key = billing_key
-            user.save()
 
-            return Response({"success": True, "message": "결제 정보가 저장되었습니다."}, status=201)
+    def schedule_recurring_payment(self, billing_key, months):
+        """
+        정기 결제 스케줄을 설정합니다.
+        """
+        try:
+            access_token = get_portone_access_token()
+            url = "https://api.iamport.kr/subscribe/payments/schedule"
+            headers = {"Authorization": f"Bearer {access_token}"}
 
-        except Exception as e:
-            import traceback
-            print("Error:", e)
-            print(traceback.format_exc())  # 스택 트레이스 출력
-            return Response({"success": False, "message": str(e)}, status=500)
+            schedules = []
+            now = datetime.now()
+            for i in range(1, months):
+                schedule_date = now + relativedelta(months=i)  # i개월 후의 날짜 계산
+                print(f"schedule_date : {schedule_date}")
+                schedules.append({
+                    "imp_uid": billing_key.imp_uid,
+                    "merchant_uid": f"scheduled_{billing_key.user.username}_{billing_key.merchant_uid}_{billing_key.subscription_cycle}",
+                    "amount": float(billing_key.amount),
+                    "schedule_at": int(schedule_date.timestamp()),  # UNIX 타임스탬프
+                    "name": f"{billing_key.plan} 정기 결제",
+                    "buyer_email": billing_key.user.email,
+                    "buyer_name": billing_key.user.name,
+                    "buyer_tel": billing_key.user.phone,
+                })
+
+            data = {"customer_uid": billing_key.customer_uid, "schedules": schedules}
+            print("스케줄링 데이터 확인:", schedules)  # 디버깅용
+            response = requests.post(url, json=data, headers=headers)
+            response_data = response.json()
+
+            if response_data.get("code") == 0:
+                return {"success": True, "response": response_data.get("response")}
+            else:
+                return {"success": False, "error": response_data.get("message", "정기 결제 스케줄링 실패")}
+
+        except requests.exceptions.RequestException as e:
+            return {"success": False, "error": f"포트원 API 통신 중 오류가 발생했습니다: {str(e)}"}
 
 
 
-
+  
 class BillingKeyChangeView(APIView):
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
@@ -205,7 +236,7 @@ class BillingKeyChangeView(APIView):
     def post(self, request):
         try:
             user = request.user
-            customer_uid = request.data.get('customer_uid') # 기존 customer_uid 사용
+            customer_uid = request.data.get('customer_uid')
 
             if not customer_uid:
                 return Response({"success": False, "message": "등록된 결제 수단이 없습니다."}, status=400)
@@ -215,125 +246,167 @@ class BillingKeyChangeView(APIView):
             verified_payment = verify_payment(customer_uid, access_token)
             if not verified_payment:
                 return Response({"success": False, "message": "카드 검증에 실패했습니다."}, status=400)
-            
-            # 카드 등록 상태 검증 성공
+
             return Response({"success": True, "message": "카드 정보가 성공적으로 변경되었습니다."}, status=200)
 
         except Exception as e:
             return Response({"success": False, "message": str(e)}, status=500)
 
 
+
 class CancelPaymentScheduleView(APIView):
-    """
-    결제 예약 취소를 처리하는 클래스
-    """
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         user = request.user
-        customer_uid = user.billing_key
+        billing_key = user.billing_key
 
-        if not customer_uid:
-            print("Debug: 사용자 결제 키가 없습니다.")
+        if not billing_key:
             return Response({"error": "결제 키가 없습니다."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            # 포트원 토큰 가져오기
             access_token = get_portone_access_token()
-            print(f"Debug: 발급된 access_token - {access_token}")
 
-            # 예약 내역 확인
-            scheduled_response = requests.get(
-                f"https://api.iamport.kr/subscribe/payments/schedule/{customer_uid}",
-                headers={"Authorization": access_token},
-            )
-            scheduled_data = scheduled_response.json()
-            print(f"Debug: PortOne 예약 내역 조회 - {scheduled_data}")
+            # 예약된 결제 정보 가져오기
+            scheduled_data = PaymentHistory.objects.filter(user=user, status='scheduled').order_by('-created_at')
+            print(f"scheduled_data : {scheduled_data}")
 
-            # 예약 내역이 없는 경우 처리
-            if not scheduled_data["response"]:
-                print("Debug: 예약된 결제가 존재하지 않습니다.")
-                PaymentHistory.objects.filter(
-                    customer_uid=customer_uid, status="scheduled"
-                ).update(status="error_sync")
-
+            if not scheduled_data.exists():  # 예약된 결제가 없을 경우
+                print("예약된 결제가 존재하지 않습니다.")
                 return Response(
-                    {"error": "예약된 결제가 존재하지 않습니다."},
-                    status=status.HTTP_400_BAD_REQUEST,
+                    {"message": "예약된 결제가 없으므로 추가 작업 없이 종료합니다."},
+                    status=status.HTTP_200_OK,
                 )
 
-            # 예약 결제 취소 요청
+            # 정기 결제 취소 요청
             cancel_schedule_response = requests.post(
                 f"https://api.iamport.kr/subscribe/payments/unschedule",
                 headers={"Authorization": access_token},
                 json={
-                    "customer_uid": customer_uid,
+                    "customer_uid": billing_key.customer_uid,  # 문자열로 전달
                 },
             )
-            print("Debug: 예약 결제 취소 요청 응답 코드 -", cancel_schedule_response.status_code)
+            print(f"cancel_schedule_response : {cancel_schedule_response}")
             cancel_schedule_response.raise_for_status()
 
             cancel_data = cancel_schedule_response.json()
-            print(f"Debug: 예약 결제 취소 응답 데이터 - {cancel_data}")
-
+            print(f"cancel_data : {cancel_data}")
             if cancel_data["code"] != 0:
-                print(f"Debug: PortOne API 오류 - {cancel_data['message']}")
                 return Response(
                     {"error": cancel_data["message"]},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # PaymentHistory 업데이트
-            PaymentHistory.objects.filter(customer_uid=customer_uid).update(
+            # PaymentHistory 상태 업데이트
+            PaymentHistory.objects.filter(billing_key=billing_key, status='scheduled').update(
                 status="canceled",
             )
-            print("Debug: PaymentHistory에 'canceled' 상태로 데이터 업데이트 완료")
 
             return Response({"message": "정기 결제가 성공적으로 취소되었습니다."}, status=status.HTTP_200_OK)
 
         except requests.exceptions.RequestException as e:
-            print(f"Debug: 포트원 API 통신 중 오류 발생 - {str(e)}")
+            print("RequestException:", str(e))
             return Response(
                 {"error": f"포트원 API 통신 중 오류가 발생했습니다: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
         except Exception as e:
-            print(f"Debug: 알 수 없는 오류 발생 - {str(e)}")
+            print("Exception:", str(e))
             return Response(
                 {"error": f"알 수 없는 오류가 발생했습니다: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
 
+
 class BillingKeyDeleteView(APIView):
-    """
-    빌링키 삭제를 처리하는 클래스
-    """
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         user = request.user
-        customer_uid = user.billing_key
+        billing_key = user.billing_key
 
-        if not customer_uid:
-            print("Debug: 사용자 결제 키가 없습니다.")
+        if not billing_key:
             return Response({"error": "결제 키가 없습니다."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            # 사용자 결제 키 삭제
-            user.billing_key = None
-            user.save()
-            print("Debug: 사용자 결제 키 삭제 완료")
+            # BillingKey 비활성화
+            billing_key.deactivate()
 
-            return Response({"message": "사용자의 빌링키가 성공적으로 삭제되었습니다."}, status=status.HTTP_200_OK)
+            # User의 billing_key 관계 해제
+            user.billing_key = None
+            user.subscription_plan = None
+            user.save()
+
+            return Response({"message": "정기 결제가 성공적으로 취소되었습니다."}, status=status.HTTP_200_OK)
 
         except Exception as e:
-            print(f"Debug: 알 수 없는 오류 발생 - {str(e)}")
             return Response(
                 {"error": f"알 수 없는 오류가 발생했습니다: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+
+
+class PaymentWebhookView(APIView):
+    """
+    포트원 웹훅 엔드포인트
+    """
+    def post(self, request):
+        try:
+            # 포트원에서 보낸 데이터 파싱
+            imp_uid = request.data.get('imp_uid')  # 결제 고유 ID
+            merchant_uid = request.data.get('merchant_uid')  # 주문 번호
+            status_code = request.data.get('status')  # 결제 상태 ('paid', 'failed', 'canceled')
+
+            # 필수 데이터 확인
+            if not all([imp_uid, merchant_uid, status_code]):
+                return Response(
+                    {"success": False, "message": "필수 데이터가 누락되었습니다."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # PaymentHistory에서 주문 번호로 결제 내역 검색
+            payment_history = PaymentHistory.objects.filter(merchant_uid=merchant_uid).first()
+
+            if not payment_history:
+                return Response(
+                    {"success": False, "message": "해당 주문 번호에 대한 결제 내역이 없습니다."},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            # 포트원 API를 통해 결제 검증
+            access_token = get_portone_access_token()
+            verified_payment = verify_payment(imp_uid, access_token)
+
+            if not verified_payment:
+                return Response(
+                    {"success": False, "message": "결제 검증에 실패했습니다."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # 상태 업데이트
+            payment_history.status = status_code
+            payment_history.save()
+
+             # 결제가 성공한 경우 구독 횟수 증가
+            if status_code == 'paid':  
+                billing_key = payment_history.billing_key
+                billing_key.subscription_cycle += 1
+                billing_key.save()
+
+            return Response(
+                {"success": True, "message": "결제 상태가 성공적으로 업데이트되었습니다."},
+                status=status.HTTP_200_OK
+            )
+
+        except Exception as e:
+            return Response(
+                {"success": False, "message": "시스템 오류가 발생했습니다."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
 
 
