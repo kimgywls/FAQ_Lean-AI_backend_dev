@@ -243,6 +243,7 @@ class PaymentHistory(models.Model):
     )
     imp_uid = models.CharField(max_length=255)  # 결제 고유 ID
     merchant_uid = models.CharField(max_length=255, unique=True)  # 주문 ID
+    merchant_name = models.CharField(max_length=255, null=True, blank=True)
     amount = models.DecimalField(max_digits=10, decimal_places=2)  # 결제 금액
     status = models.CharField(max_length=50)
     created_at = models.DateTimeField(auto_now_add=True)  # 결제 시각

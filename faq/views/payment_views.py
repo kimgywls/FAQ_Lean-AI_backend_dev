@@ -6,7 +6,7 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from datetime import timedelta, datetime
+from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import requests 
 from ..models import PaymentHistory, SubscriptionPlan, BillingKey
@@ -77,6 +77,7 @@ class PaymentHistoryView(APIView):
         data = [
             {
                 "merchant_uid": payment.merchant_uid,  # 결제 주문 번호
+                "merchant_name": payment.merchant_name,  # 결제 주문 이름
                 "amount": str(payment.amount),  # 결제 금액
                 "status": payment.status,  # 결제 상태
                 "created_at": payment.created_at,  # 생성 일자
@@ -140,6 +141,7 @@ class BillingKeySaveView(APIView):
                     user=user,
                     billing_key=billing_key,
                     merchant_uid=merchant_uid,
+                    merchant_name=f"{subscription_plan.plan_type}_{billing_key.subscription_cycle}",
                     amount=subscription_plan.price,
                     status='paid',  # 첫 결제는 완료 상태
                 )
@@ -160,6 +162,7 @@ class BillingKeySaveView(APIView):
                         user=user,
                         billing_key=billing_key,
                         merchant_uid=first_schedule['merchant_uid'],
+                        merchant_name=f"{subscription_plan.plan_type}_{billing_key.subscription_cycle}",
                         amount=first_schedule['amount'],
                         status='scheduled',  # 결제 예정 상태
                         scheduled_at=datetime.fromtimestamp(first_schedule['schedule_at']),
