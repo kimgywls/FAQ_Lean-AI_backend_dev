@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import User, Store, Edit, Menu, BillingKey
+from .models import User, Store, Edit, Menu, BillingKey, Subscription, PaymentHistory
 from django.contrib.auth.hashers import make_password
 from django.conf import settings
 import re
@@ -26,15 +26,19 @@ def validate_file(value, allowed_extensions, max_file_size, error_message_prefix
 class BillingKeySerializer(serializers.ModelSerializer):
     class Meta:
         model = BillingKey
-        fields = [
-            "customer_uid",
-            "imp_uid",
-            "merchant_uid",
-            "plan",
-            "amount",
-            "created_at",   
-        ]
+        fields = ['id', 'plan', 'amount', 'created_at', 'subscription_cycle']
 
+class SubscriptionSerializer(serializers.ModelSerializer):
+    billing_key = BillingKeySerializer(read_only=True)  # BillingKey 데이터를 포함
+
+    class Meta:
+        model = Subscription
+        fields = ['plan', 'is_active', 'next_billing_date', 'billing_key']
+
+class PaymentHistorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PaymentHistory
+        fields = '__all__'
 
 # 유저 관련 시리얼라이저
 class UserSerializer(serializers.ModelSerializer):
@@ -42,7 +46,7 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['user_id', 'username', 'password', 'name', 'dob', 'phone', 'email', 'profile_photo', 'created_at', 'marketing', 'billing_key']
+        fields = ['user_id', 'username', 'password', 'name', 'dob', 'phone', 'email', 'profile_photo', 'created_at', 'marketing']
         extra_kwargs = {
             'password': {'write_only': True},  # 비밀번호는 쓰기 전용으로 설정
             'email': {'required': False}  # 이메일은 필수가 아님
@@ -87,8 +91,8 @@ class UserSerializer(serializers.ModelSerializer):
 class StoreSerializer(serializers.ModelSerializer):
     class Meta:
         model = Store
-        fields = ['store_id', 'user', 'store_name', 'store_address', 'store_tel', 'banner', 'menu_price', 'opening_hours', 'qr_code', 'agent_id', 'updated_at', 'slug', 'store_category', 'store_introduction', 'store_information']
-
+        fields = '__all__'
+        
     # 배너 이미지 검증 (빈 값은 허용하며, 파일 형식과 크기 검증)
     def validate_banner(self, value):
         if value in [None, '']:
@@ -213,4 +217,6 @@ class MenuSerializer(serializers.ModelSerializer):
             # 이미지 URL에 MEDIA_URL을 추가하여 반환
             representation['image'] = f"{settings.MEDIA_URL}{instance.image}"
         return representation
+
+
 
