@@ -26,14 +26,14 @@ def validate_file(value, allowed_extensions, max_file_size, error_message_prefix
 class BillingKeySerializer(serializers.ModelSerializer):
     class Meta:
         model = BillingKey
-        fields = ['id', 'plan', 'amount', 'created_at', 'subscription_cycle']
+        fields = '__all__'
 
 class SubscriptionSerializer(serializers.ModelSerializer):
     billing_key = BillingKeySerializer(read_only=True)  # BillingKey 데이터를 포함
 
     class Meta:
         model = Subscription
-        fields = ['plan', 'is_active', 'next_billing_date', 'billing_key']
+        fields = ['id', 'plan', 'is_active', 'next_billing_date', 'billing_key']
 
 class PaymentHistorySerializer(serializers.ModelSerializer):
     class Meta:
@@ -42,7 +42,7 @@ class PaymentHistorySerializer(serializers.ModelSerializer):
 
 # 유저 관련 시리얼라이저
 class UserSerializer(serializers.ModelSerializer):
-    billing_key = BillingKeySerializer()
+    subscription = SubscriptionSerializer()
 
     class Meta:
         model = User

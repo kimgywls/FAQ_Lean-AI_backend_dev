@@ -9,7 +9,7 @@ from rest_framework.views import APIView
 from exponent_server_sdk import PushClient, PushMessage
 import logging, os
 from ..models import Store
-from ..serializers import BillingKeySerializer
+from ..serializers import BillingKeySerializer, SubscriptionSerializer
 
 logger = logging.getLogger('faq')
 
@@ -30,6 +30,7 @@ class UserProfileView(APIView):
             store = None
             logger.debug(f"No store found for user {user.username}")
 
+        # 프로필 및 스토어 관련 데이터
         profile_photo_url = user.profile_photo.url if user.profile_photo else ""
         qr_code_path = os.path.join(settings.MEDIA_ROOT, f"qr_codes/qr_{store.store_id}.png") if store else None
         qr_code_url = (
@@ -39,7 +40,9 @@ class UserProfileView(APIView):
         )
         banner_url = store.banner.url if store and store.banner else ""
 
-        billing_key_data = BillingKeySerializer(user.billing_key).data if user.billing_key else None
+        subscription_data = (
+            SubscriptionSerializer(user.subscription).data if hasattr(user, "subscription") else None
+        )
 
         response_data = {
             'profile_photo': profile_photo_url,
@@ -52,12 +55,11 @@ class UserProfileView(APIView):
             'qr_code_url': qr_code_url,
             'banner_url': banner_url,
             'marketing': user.marketing,
-            'billing_key': billing_key_data,
+            'subscription': subscription_data,  # ✅ Subscription 데이터 추가
         }
         logger.debug(f"Response data: {response_data}")
 
         return Response(response_data)
-
 
     def put(self, request):
         user = request.user
