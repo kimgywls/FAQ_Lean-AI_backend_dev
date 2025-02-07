@@ -628,6 +628,9 @@ class PaymentWebhookView(APIView):
 
     def post(self, request):
         try:
+            # 요청 데이터 로깅
+            print(f"Webhook 요청 데이터: {request.data}")
+
             imp_uid = request.data.get("imp_uid")
             merchant_uid = request.data.get("merchant_uid")
             status_code = request.data.get("status")
@@ -637,12 +640,21 @@ class PaymentWebhookView(APIView):
                     {"success": False, "message": "필수 데이터 누락"}, status=400
                 )
 
-            payment_history = get_object_or_404(
-                PaymentHistory, merchant_uid=merchant_uid
-            )
+            # PaymentHistory 조회
+            try:
+                payment_history = PaymentHistory.objects.get(merchant_uid=merchant_uid)
+            except PaymentHistory.DoesNotExist:
+                print(f"PaymentHistory가 존재하지 않음: {merchant_uid}")
+                return Response(
+                    {"success": False, "message": "결제 이력을 찾을 수 없음"}, status=404
+                )
 
+            # 포트원 결제 검증
             access_token = get_portone_access_token()
             verified_payment = verify_payment(imp_uid, access_token)
+
+            # 결제 검증 결과 로깅
+            print(f"결제 검증 결과: {verified_payment}")
 
             if not verified_payment:
                 return Response(
@@ -654,10 +666,16 @@ class PaymentWebhookView(APIView):
             payment_history.imp_uid = imp_uid  # 실제 imp_uid 업데이트
             payment_history.save()
 
+            # 결제가 성공한 경우 추가 처리
             if status_code == "paid":
                 billing_key = payment_history.billing_key
-                billing_key.subscription_cycle += 1
-                billing_key.save()
+
+                # Billing Key 업데이트
+                if billing_key:
+                    billing_key.subscription_cycle += 1
+                    billing_key.save()
+                else:
+                    print("⚠️ Billing Key가 없음")
 
                 # ✅ 구독 정보 가져오기
                 subscription = Subscription.objects.filter(
@@ -676,9 +694,11 @@ class PaymentWebhookView(APIView):
                         next_billing.scheduled_at.date() if next_billing
                         else timezone.now().date() + relativedelta(months=1)
                     )
-                    
+
                     subscription.save(update_fields=["next_billing_date"])
                     print(f"✅ 다음 결제일 업데이트 완료: {subscription.next_billing_date}")
+                else:
+                    print("⚠️ 구독 정보가 없음")
 
                 # ✅ 스케줄이 2개월 이하로 남은 경우 다음 12개월 등록
                 remaining_schedules = PaymentHistory.objects.filter(
@@ -696,5 +716,7 @@ class PaymentWebhookView(APIView):
             )
 
         except Exception as e:
-            return Response({"success": False, "message": str(e)}, status=500)
-
+            # 예외 발생 시 상세한 정보 로깅
+            print(f"에러 발생: {str(e)}")
+            print(traceback.format_exc())
+            return Response({"success": False, "message": "서버 오류 발생"}, status=500)

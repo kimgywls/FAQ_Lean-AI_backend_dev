@@ -176,7 +176,7 @@ def schedule_payments_for_user(user):
     for i in range(365):  # 1년 동안 매일 예약
         schedule_date = start_date + relativedelta(days=i)
         timestamp = int(datetime.now().timestamp())
-        merchant_uid = f"{billing_key.merchant_uid}_{i+1}_{timestamp}"  # 고유한 merchant_uid 생성
+        merchant_uid = f"{billing_key.merchant_uid}_{i+2}_{timestamp}"  # 고유한 merchant_uid 생성
 
         # PaymentHistory에 저장 (예약된 결제 정보)
         PaymentHistory.objects.create(
