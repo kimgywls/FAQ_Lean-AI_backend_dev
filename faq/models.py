@@ -1,9 +1,8 @@
 from django.db import models
 from django.utils.text import slugify
 from django.conf import settings
-import os
-import json
-from datetime import timedelta, date
+import os , uuid, json 
+from datetime import date
 from dateutil.relativedelta import relativedelta
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager
 

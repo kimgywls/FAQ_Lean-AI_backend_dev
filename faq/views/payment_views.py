@@ -1,9 +1,10 @@
-import requests, traceback
+import requests, traceback, copy
 from django.db import transaction
 from django.utils import timezone
 from rest_framework.views import APIView
 from rest_framework import status, viewsets
 from rest_framework.response import Response
+from rest_framework.decorators import action
 from dateutil.relativedelta import relativedelta
 from django.shortcuts import get_object_or_404
 from rest_framework.exceptions import ValidationError
@@ -34,6 +35,121 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """현재 로그인한 사용자의 구독 정보만 조회"""
         return Subscription.objects.filter(user=self.request.user)
+    
+    def create (self, request):
+        """
+        구독 신청 API
+        - BillingKey 저장 및 갱신
+        - 구독 정보 업데이트
+        - 첫 결제 처리 및 이후 결제 스케줄링
+        """
+        user = request.user
+        imp_uid = request.data.get("imp_uid")
+        customer_uid = request.data.get("customer_uid")
+        merchant_uid = request.data.get("merchant_uid")
+        plan = request.data.get("plan")
+
+        #print("🔹 [SubscriptionViewSet.subscribe] 요청 데이터:", request.data)
+
+        # ✅ `plan`에 따른 가격 설정
+        plan_prices = {
+            "BASIC": 9900,
+            "ENTERPRISE": 500000,
+        }
+        price = plan_prices.get(plan)
+
+        if not all([imp_uid, customer_uid, merchant_uid, plan, price]):
+            return Response(
+                {"success": False, "message": "필수 요청 데이터가 누락되었습니다."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            with transaction.atomic():
+                # ✅ BillingKey 저장 또는 업데이트
+                billing_key, created = BillingKey.objects.update_or_create(
+                    user=user,
+                    defaults={
+                        "customer_uid": customer_uid,
+                        "merchant_uid": merchant_uid,
+                        "imp_uid": imp_uid,
+                        "plan": plan,
+                        "amount": price,
+                        "is_active": True,
+                    },
+                )
+                billing_key.created_at = timezone.now()
+                billing_key.save()
+
+                user.billing_key = billing_key
+                user.save(update_fields=["billing_key"])
+
+                # ✅ 12개월 예약 결제 스케줄링 실행
+                schedule_payments_for_user(user)
+
+                # ✅ 다음 결제일 설정
+                next_billing = (
+                    PaymentHistory.objects.filter(
+                        user=user, billing_key=billing_key, status="scheduled"
+                    )
+                    .order_by("scheduled_at")
+                    .first()
+                )
+                next_billing_date = (
+                    next_billing.scheduled_at.date()
+                    if next_billing
+                    else timezone.now().date() + relativedelta(months=1)
+                )
+
+                # ✅ 구독 정보 생성 또는 업데이트
+                subscription, _ = Subscription.objects.update_or_create(
+                    user=user,
+                    defaults={
+                        "plan": plan,
+                        "is_active": True,
+                        "next_billing_date": next_billing_date,
+                        "billing_key": billing_key,
+                    },
+                )
+
+                # ✅ 첫 번째 즉시 결제 내역 저장
+                payment_history = PaymentHistory.objects.create(
+                    user=user,
+                    billing_key=billing_key,
+                    imp_uid=imp_uid,
+                    merchant_uid=merchant_uid,
+                    merchant_name=f"{plan} 구독 결제",
+                    amount=price,
+                    status="paid",
+                    scheduled_at=None,
+                    created_at=timezone.now(),
+                )
+
+                return Response(
+                    {
+                        "success": True,
+                        "message": "구독 신청이 성공적으로 완료되었습니다.",
+                        "billing_key_data": BillingKeySerializer(billing_key).data,
+                        "subscription_data": SubscriptionSerializer(subscription).data,
+                        "payment_history_data": {
+                            "merchant_name": payment_history.merchant_name,
+                            "amount": str(payment_history.amount),
+                            "status": payment_history.status,
+                            "created_at": payment_history.created_at.strftime(
+                                "%Y-%m-%d %H:%M:%S"
+                            ),
+                        },
+                    },
+                    status=status.HTTP_201_CREATED,
+                )
+
+        except Exception as e:
+            print(f"❌ [ERROR] 구독 신청 중 오류 발생: {e}")
+            return Response(
+                {"success": False, "message": f"오류 발생: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
 
     def retrieve(self, request, *args, **kwargs):
         """
@@ -80,12 +196,176 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
                 # ✅ BillingKey의 `deactivation_date`만 설정 (실제 취소는 이후 실행)
                 billing_key.deactivation_date = next_billing_date
                 billing_key.save()
-                print(f"🛑 BillingKey {billing_key.customer_uid} 비활성화 예정일: {billing_key.deactivation_date}")
 
             return Response({"message": f"구독이 해지되었습니다. \n {next_billing_date}까지 이용 가능합니다."}, status=200)
 
         except Subscription.DoesNotExist:
             return Response({"error": "구독 정보 없음"}, status=404)
+        
+    @action(detail=False, methods=['post'])
+    def restore(self, request):
+        """
+        구독을 복구하는 API (해지 취소)
+        - BillingKey의 deactivation_date를 None으로 설정
+        - 구독 상태 유지 (is_active 변경 없음)
+        - 기존 결제 스케줄 유지
+        """
+
+        try:
+            subscription = request.user.subscription
+            billing_key = BillingKey.objects.filter(user=request.user).first()
+
+            # 🔎 BillingKey 및 Subscription 상태 확인
+            '''
+            print(f"🔹 현재 구독 상태: is_active={subscription.is_active}")
+            print(f"🔹 BillingKey 존재 여부: {billing_key is not None}")
+            print(f"🔹 BillingKey 해지 예정일: {billing_key.deactivation_date}")
+            '''
+
+            if not billing_key:
+                print("❌ [ERROR] BillingKey 없음")
+                return Response(
+                    {"error": "결제 수단 정보를 찾을 수 없습니다."}, 
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            # ✅ 해지 취소 가능 여부 체크 (billing_key.deactivation_date 값 확인)
+            if billing_key.deactivation_date is None:
+                return Response(
+                    {"message": "이미 활성화된 구독이며, 해지 예정이 없습니다."}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            with transaction.atomic():
+                # 🔄 BillingKey 복구 (해지 예약 취소)
+                billing_key.deactivation_date = None
+                billing_key.is_active = True
+                billing_key.save()
+
+                # 🔍 다음 결제일 유지 (해지 예약이 취소된 것이므로 변경 X)
+                next_billing = (
+                    PaymentHistory.objects.filter(
+                        user=request.user,
+                        billing_key=billing_key,
+                        status="scheduled"
+                    )
+                    .order_by("scheduled_at")
+                    .first()
+                )
+
+                next_billing_date = (
+                    next_billing.scheduled_at.date()
+                    if next_billing
+                    else subscription.next_billing_date
+                )
+
+                # 🔄 구독 정보 업데이트 (is_active 변경 X, 기존 결제일 유지)
+                subscription.next_billing_date = next_billing_date
+                subscription.save()
+                subscription.refresh_from_db()
+
+                return Response({
+                    "message": f"구독 해지가 취소되었습니다.",
+                    "subscription": SubscriptionSerializer(subscription).data
+                }, status=status.HTTP_200_OK)
+
+        except Subscription.DoesNotExist:
+            return Response(
+                {"error": "구독 정보를 찾을 수 없습니다."}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response(
+                {"error": f"구독 해지 취소 중 오류가 발생했습니다: {str(e)}"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+    @action(detail=False, methods=['post'])
+    def update_billing_key(self, request):
+        """
+        사용자의 결제 카드(BillingKey)를 변경하는 API
+        1. 기존 예약 결제를 취소
+        2. 새로운 BillingKey를 저장
+        3. 새로운 결제 스케줄을 등록
+        """
+        try:
+            user = request.user  
+            imp_uid = request.data.get("imp_uid")
+            new_customer_uid = request.data.get("customer_uid")
+
+            #print("🔍 [DEBUG] 요청 데이터:", request.data)
+
+            if not new_customer_uid:
+                print("❌ [ERROR] 새 결제 수단 정보가 없습니다.")
+                return Response(
+                    {"success": False, "message": "새 결제 수단 정보가 없습니다."},
+                    status=400,
+                )
+
+            access_token = get_portone_access_token()
+
+            # 카드 정보 검증
+            verified_payment = verify_payment(imp_uid, access_token)
+            if not verified_payment:
+                return Response(
+                    {"success": False, "message": "카드 검증에 실패했습니다."},
+                    status=400,
+                )
+
+            # 기존 BillingKey 가져오기
+            billing_key = get_object_or_404(BillingKey, user=user)
+
+            success = False  # 트랜잭션 성공 여부를 추적하기 위한 플래그
+            
+            try:
+                with transaction.atomic():
+                    # ✅ 새로운 BillingKey 업데이트
+                    old_customer_uid = billing_key.customer_uid  # 기존 UID 저장
+                    billing_key.customer_uid = new_customer_uid  
+                    billing_key.save()
+                    
+                    success = True  # 모든 작업이 성공적으로 완료됨
+
+            except Exception as e:
+                print(f"❌ [ERROR] 결제 취소 또는 스케줄링 중 오류 발생: {str(e)}")
+                # 트랜잭션이 자동으로 롤백됨
+                
+                if not success:  # 트랜잭션이 실패한 경우에만 BillingKey 복구
+                    try:
+                        # 새로운 트랜잭션에서 BillingKey 복구
+                        with transaction.atomic():
+                            billing_key.refresh_from_db()  # 최신 데이터로 리프레시
+                            billing_key.customer_uid = old_customer_uid
+                            billing_key.save()
+                    except Exception as recovery_error:
+                        print(f"❌ [ERROR] BillingKey 복구 중 오류 발생: {str(recovery_error)}")
+                
+                raise e  # 원래 예외를 다시 발생시킴
+
+            return Response(
+                {
+                    "success": True,
+                    "message": "카드 정보가 성공적으로 변경되고, 새로운 결제 스케줄이 등록되었습니다.",
+                },
+                status=200,
+            )
+
+        except ValidationError as ve:
+            print(f"❌ [ERROR] 데이터 검증 오류 발생: {str(ve)}")
+            return Response({"success": False, "message": str(ve)}, status=400)
+
+        except Exception as e:
+            print(f"❌ [ERROR] 카드 변경 처리 중 오류 발생: {str(e)}")
+            return Response(
+                {
+                    "success": False,
+                    "message": f"카드 변경 처리 중 오류가 발생했습니다: {str(e)}",
+                },
+                status=500,
+            )
+
+
 
 
 class PaymentHistoryView(APIView):
@@ -140,322 +420,7 @@ class PaymentHistoryView(APIView):
 
 
 
-class BillingKeySaveView(APIView):
-    """
-    카드 등록 후 BillingKey 저장 & 구독 정보 업데이트 및 결제 내역 기록
-    """
-
-    authentication_classes = [JWTAuthentication]
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        user = request.user
-        imp_uid = request.data.get("imp_uid")
-        customer_uid = request.data.get("customer_uid")
-        merchant_uid = request.data.get("merchant_uid")
-        plan = request.data.get("plan")
-        price = request.data.get("price")
-
-        print("🔹 [BillingKeySaveView] 요청 데이터:", request.data)
-
-        # 필수 요청 데이터가 모두 존재하는지 확인
-        if not all([imp_uid, customer_uid, merchant_uid, plan, price]):
-            print("❌ [BillingKeySaveView] 필수 데이터 누락")
-            return Response(
-                {"success": False, "message": "필수 요청 데이터가 누락되었습니다."},
-                status=400,
-            )
-
-        try:
-            with transaction.atomic():  # 데이터 일관성을 유지하기 위한 트랜잭션 시작
-
-                # BillingKey 저장 또는 업데이트
-                billing_key, created = BillingKey.objects.update_or_create(
-                    user=user,
-                    defaults={
-                        "customer_uid": customer_uid,
-                        "merchant_uid": merchant_uid,
-                        "imp_uid": imp_uid,
-                        "plan": plan,
-                        "amount": price,
-                        "is_active": True,
-                    },
-                )
-
-                # BillingKey 생성 시간 설정
-                now = timezone.now()
-                billing_key.created_at = now
-                billing_key.save()
-
-                # BillingKey를 사용자 정보에 추가
-                user.billing_key = billing_key
-                user.save(update_fields=["billing_key"])
-
-                # 12개월 예약 결제 스케줄링 실행
-                schedule_payments_for_user(user)
-
-                # 스케쥴링한 결제 내역 중 가장 가까운 'scheduled_at' 찾기
-                next_billing = (
-                    PaymentHistory.objects.filter(
-                        user=user, billing_key=billing_key, status="scheduled"
-                    )
-                    .order_by("scheduled_at")
-                    .first()
-                )
-
-                next_billing_date = (
-                    next_billing.scheduled_at.date()
-                    if next_billing
-                    else now().date() + relativedelta(months=1)
-                )
-
-                # 구독 정보 생성 또는 업데이트
-                subscription, _ = Subscription.objects.update_or_create(
-                    user=user,
-                    defaults={
-                        "plan": plan,
-                        "is_active": True,
-                        "next_billing_date": next_billing_date,
-                        "billing_key": billing_key,
-                    },
-                )
-
-                # 첫 번째 즉시 결제 내역 저장
-                payment_history = PaymentHistory.objects.create(
-                    user=user,
-                    billing_key=billing_key,
-                    imp_uid=imp_uid,
-                    merchant_uid=merchant_uid,
-                    merchant_name=f"{plan} 구독 결제",
-                    amount=price,
-                    status="paid",  # 첫 결제는 즉시 완료 상태로 설정
-                    scheduled_at=None,
-                    created_at=now,
-                )
-
-                return Response(
-                    {
-                        "success": True,
-                        "message": "카드가 성공적으로 등록되었습니다.",
-                        "billing_key_data": BillingKeySerializer(billing_key).data,
-                        "subscription_data": SubscriptionSerializer(subscription).data,
-                        "payment_history_data": {
-                            "merchant_name": payment_history.merchant_name,
-                            "amount": str(payment_history.amount),
-                            "status": payment_history.status,
-                            "created_at": payment_history.created_at.strftime(
-                                "%Y-%m-%d %H:%M:%S"
-                            ),
-                        },
-                    },
-                    status=201,
-                )
-
-        except Exception as e:
-            print(f"❌ [BillingKeySaveView] 오류 발생: {e}")
-            traceback.print_exc()  # 오류 발생 시 전체 스택 트레이스 출력
-            return Response(
-                {"success": False, "message": f"오류 발생: {str(e)}"}, status=500
-            )
-
-
-
-class BillingKeyChangeView(APIView):
-    """
-    유저의 결제 키(BillingKey)를 변경하는 뷰
-    카드 변경 시:
-    1. 기존 예약 결제 취소
-    2. 새로운 BillingKey 업데이트
-    3. 새로운 결제 스케줄 생성
-    """
-
-    authentication_classes = [JWTAuthentication]  # JWT 인증을 사용하여 인증 설정
-    permission_classes = [IsAuthenticated]  # 인증된 사용자만 접근 가능하도록 설정
-
-    def post(self, request):
-        """
-        사용자의 결제 카드(BillingKey)를 변경하는 API
-        1. 기존 예약 결제를 취소
-        2. 새로운 BillingKey를 저장
-        3. 새로운 결제 스케줄을 등록
-        """
-        try:
-            user = request.user  # 현재 로그인한 사용자 정보 가져오기
-            imp_uid = request.data.get("imp_uid")
-            new_customer_uid = request.data.get(
-                "customer_uid"
-            )  # 새 결제 수단의 UID 가져오기
-
-            if not new_customer_uid:
-                return Response(
-                    {"success": False, "message": "새 결제 수단 정보가 없습니다."},
-                    status=400,
-                )
-
-            access_token = (
-                get_portone_access_token()
-            )  # 포트원(PortOne) API 인증 토큰 가져오기
-
-            # 카드 정보 검증
-            verified_payment = verify_payment(imp_uid, access_token)
-            if not verified_payment:
-                return Response(
-                    {"success": False, "message": "카드 검증에 실패했습니다."},
-                    status=400,
-                )
-
-            with transaction.atomic():  # 트랜잭션 처리 (모든 변경 사항이 성공적으로 수행되어야 반영됨)
-                # 기존 BillingKey 가져오기
-                billing_key = get_object_or_404(BillingKey, user=user)
-
-                # 기존 예약된 결제 취소
-                cancel_url = "https://api.iamport.kr/subscribe/payments/unschedule"  # 예약 결제 취소 API 엔드포인트
-                requests.post(
-                    cancel_url,
-                    json={"customer_uid": billing_key.customer_uid},
-                    headers={"Authorization": access_token},
-                )
-
-                # 기존 예약된 결제 내역을 PaymentHistory에서 "canceled"로 변경
-                canceled_payments = PaymentHistory.objects.filter(
-                    user=user,
-                    billing_key=billing_key,
-                    status="scheduled",  # 예약된 결제만 취소 처리
-                ).update(status="canceled")
-
-                print(
-                    f"🛑 PaymentHistory에서 {canceled_payments}개의 예약 결제를 취소 상태로 변경"
-                )
-
-                # 새로운 BillingKey 업데이트
-                billing_key.customer_uid = new_customer_uid  # 기존 BillingKey의 customer_uid를 새로운 값으로 변경
-                billing_key.save()  # 변경된 BillingKey 저장
-
-                # 새로운 결제 스케줄 등록 (사전에 정의된 결제 스케줄링 함수 호출)
-                schedule_payments_for_user(user)
-
-                print("✅ 카드 변경 및 새로운 결제 스케줄 완료")  # 로그 출력
-
-            return Response(
-                {
-                    "success": True,
-                    "message": "카드 정보가 성공적으로 변경되고, 새로운 결제 스케줄이 등록되었습니다.",
-                },
-                status=200,
-            )
-
-        except ValidationError as ve:  # 데이터 검증 오류 발생 시 예외 처리
-            return Response({"success": False, "message": str(ve)}, status=400)
-        except Exception as e:  # 기타 예외 처리
-            return Response(
-                {
-                    "success": False,
-                    "message": f"카드 변경 처리 중 오류가 발생했습니다: {str(e)}",
-                },
-                status=500,
-            )
-
-
-class CancelPaymentScheduleView(APIView):
-    """
-    예약된 정기 결제 스케줄을 취소하는 뷰
-    - 예약된 결제가 있으면 이를 취소하고 상태를 'canceled'로 변경
-    """
-
-    authentication_classes = [JWTAuthentication]
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        user = request.user
-
-        # 사용자와 연결된 BillingKey 가져오기
-        billing_key = getattr(user, "billing_key", None)
-
-        if not billing_key:
-            return Response(
-                {"error": "결제 키가 없습니다."}, status=status.HTTP_400_BAD_REQUEST
-            )
-
-        try:
-            with transaction.atomic():  # 데이터 일관성을 유지하기 위한 트랜잭션 처리
-                access_token = get_portone_access_token()
-
-                # 예약된 결제 내역 조회
-                scheduled_data = PaymentHistory.objects.filter(
-                    user=user, status="scheduled"
-                )
-
-                # 예약 결제 취소 API 호출
-                if scheduled_data.exists():
-                    requests.post(
-                        "https://api.iamport.kr/subscribe/payments/unschedule",
-                        headers={"Authorization": access_token},
-                        json={"customer_uid": billing_key.customer_uid},
-                    )
-
-                    # 예약된 결제 내역 상태 변경 (scheduled → canceled)
-                    scheduled_data.update(status="canceled")
-
-            return Response(
-                {"message": "정기 결제가 성공적으로 취소되었습니다."},
-                status=status.HTTP_200_OK,
-            )
-
-        except Exception as e:
-            return Response(
-                {"error": f"오류 발생: {str(e)}"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
-
-class BillingKeyDeleteView(APIView):
-    """
-    유저의 결제 키(BillingKey)를 삭제하고 정기 결제를 취소하는 뷰
-    - BillingKey 비활성화 (is_active=False)
-    - User와 BillingKey 연결 해제 (billing_key=None)
-    - Subscription 비활성화 (is_active=False)
-    """
-
-    authentication_classes = [JWTAuthentication]
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        user = request.user
-
-        # 사용자와 연결된 BillingKey 가져오기
-        billing_key = getattr(user, "billing_key", None)
-
-        if not billing_key:
-            return Response(
-                {"error": "결제 키가 없습니다."}, status=status.HTTP_400_BAD_REQUEST
-            )
-
-        try:
-            with transaction.atomic():  # 데이터 일관성을 유지하기 위한 트랜잭션 처리
-                # BillingKey 비활성화
-                billing_key.deactivate()
-
-                # User와 BillingKey 연결 해제
-                user.billing_key = None
-                user.save()
-
-                # Subscription 비활성화
-                subscription = getattr(user, "subscription", None)
-                if subscription:
-                    subscription.deactivate()
-
-            return Response(
-                {"message": "정기 결제가 해지되었습니다."}, status=status.HTTP_200_OK
-            )
-
-        except Exception as e:
-            return Response(
-                {"error": f"오류 발생: {str(e)}"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
-
-class PaymentCompleteView(APIView):
+class PaymentCompleteMobileView(APIView):
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
 
@@ -464,7 +429,6 @@ class PaymentCompleteView(APIView):
         imp_uid = request.data.get("imp_uid")
 
         if not imp_uid:
-            print("❌ imp_uid가 전달되지 않음")
             return Response(
                 {"success": False, "message": "imp_uid가 전달되지 않았습니다."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -483,7 +447,6 @@ class PaymentCompleteView(APIView):
 
             # 테스트 모드 검증
             if is_test_mode and payment_data.get("status") != "paid":
-                print("❌ 테스트 모드에서 결제 상태가 유효하지 않음")
                 return Response(
                     {
                         "success": False,
@@ -495,7 +458,6 @@ class PaymentCompleteView(APIView):
 
             # 실제 결제 검증
             if not is_test_mode and not payment_data.get("success"):
-                print("❌ 결제 검증 실패")
                 return Response(
                     {
                         "success": False,
@@ -510,7 +472,7 @@ class PaymentCompleteView(APIView):
             if "BASIC" in merchant_uid:
                 plan = "BASIC"
                 price = 9900
-            elif "ENTERPRISE" in merchant_uid:
+            elif "ENT" in merchant_uid:
                 plan = "ENTERPRISE"
                 price = 500000
 
@@ -539,7 +501,6 @@ class PaymentCompleteView(APIView):
             )
 
         except Exception as e:
-            print(f"❌ 결제 처리 중 오류 발생: {e}")
             return Response(
                 {
                     "success": False,
@@ -549,7 +510,7 @@ class PaymentCompleteView(APIView):
             )
 
 
-class PaymentChangeCompleteView(APIView):
+class PaymentChangeCompleteMobileView(APIView):
     """
     사용자의 카드 변경 완료를 처리하는 뷰
     - imp_uid를 이용하여 결제 정보를 조회하고 customer_uid를 찾아 프론트로 전달
@@ -564,7 +525,6 @@ class PaymentChangeCompleteView(APIView):
         imp_uid = request.data.get("imp_uid")  # 프론트에서 전달한 imp_uid
 
         if not imp_uid:
-            print("❌ imp_uid가 전달되지 않음")
             return Response(
                 {"success": False, "message": "imp_uid가 전달되지 않았습니다."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -598,8 +558,6 @@ class PaymentChangeCompleteView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            print(f"✅ imp_uid({imp_uid}) -> customer_uid({customer_uid}) 조회 완료")
-
             # 2️⃣ 프론트엔드로 customer_uid 반환 (billing-key-change를 별도로 호출하도록)
             return Response(
                 {
@@ -611,7 +569,6 @@ class PaymentChangeCompleteView(APIView):
             )
 
         except Exception as e:
-            print(f"❌ 카드 변경 처리 중 오류 발생: {str(e)}")
             return Response(
                 {
                     "success": False,
@@ -629,7 +586,7 @@ class PaymentWebhookView(APIView):
     def post(self, request):
         try:
             # 요청 데이터 로깅
-            print(f"Webhook 요청 데이터: {request.data}")
+            #print(f"Webhook 요청 데이터: {request.data}")
 
             imp_uid = request.data.get("imp_uid")
             merchant_uid = request.data.get("merchant_uid")
@@ -644,7 +601,6 @@ class PaymentWebhookView(APIView):
             try:
                 payment_history = PaymentHistory.objects.get(merchant_uid=merchant_uid)
             except PaymentHistory.DoesNotExist:
-                print(f"PaymentHistory가 존재하지 않음: {merchant_uid}")
                 return Response(
                     {"success": False, "message": "결제 이력을 찾을 수 없음"}, status=404
                 )
@@ -652,9 +608,6 @@ class PaymentWebhookView(APIView):
             # 포트원 결제 검증
             access_token = get_portone_access_token()
             verified_payment = verify_payment(imp_uid, access_token)
-
-            # 결제 검증 결과 로깅
-            print(f"결제 검증 결과: {verified_payment}")
 
             if not verified_payment:
                 return Response(
@@ -664,18 +617,14 @@ class PaymentWebhookView(APIView):
             # ✅ 결제 상태 업데이트
             payment_history.status = status_code
             payment_history.imp_uid = imp_uid  # 실제 imp_uid 업데이트
+            payment_history.created_at = timezone.now()  # 실제 created_at 업데이트
             payment_history.save()
 
             # 결제가 성공한 경우 추가 처리
             if status_code == "paid":
                 billing_key = payment_history.billing_key
-
-                # Billing Key 업데이트
-                if billing_key:
-                    billing_key.subscription_cycle += 1
-                    billing_key.save()
-                else:
-                    print("⚠️ Billing Key가 없음")
+                billing_key.subscription_cycle += 1
+                billing_key.save()
 
                 # ✅ 구독 정보 가져오기
                 subscription = Subscription.objects.filter(
@@ -720,3 +669,5 @@ class PaymentWebhookView(APIView):
             print(f"에러 발생: {str(e)}")
             print(traceback.format_exc())
             return Response({"success": False, "message": "서버 오류 발생"}, status=500)
+
+

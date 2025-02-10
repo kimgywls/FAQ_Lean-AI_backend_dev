@@ -138,33 +138,26 @@ def get_card_info(user):
 
     except requests.exceptions.RequestException as e:
         return {"card_name": "Unknown Bank", "card_number": "카드 정보 조회 실패"}
-
+    
+    
 # 예약 결제 test
 def schedule_payments_for_user(user):
     """
     사용자의 정기 결제를 매일 자동으로 예약하는 함수.
-
-    :param user: 유저 객체
-    :raises: ValidationError - BillingKey가 없거나 스케줄 등록 실패 시 예외 발생
     """
-    print(f"🟢 매일 결제 스케줄링 시작: {user.username}")
 
-    # 사용자 BillingKey 확인
     billing_key = BillingKey.objects.filter(user=user, is_active=True).first()
     if not billing_key:
         raise ValidationError("활성화된 BillingKey가 없습니다.")
 
     access_token = get_portone_access_token()
-    print(f"🔑 IAMPORT Access Token: {access_token}")
 
-    # 기존 예약된 결제 중 가장 마지막 결제 날짜 조회
     last_scheduled_payment = (
         PaymentHistory.objects.filter(user=user, status="scheduled")
         .order_by("-scheduled_at")
         .first()
     )
 
-    # 기존 예약이 있다면 마지막 결제 다음 날부터 시작
     if last_scheduled_payment:
         start_date = last_scheduled_payment.scheduled_at + relativedelta(days=1)
     else:
@@ -172,17 +165,14 @@ def schedule_payments_for_user(user):
 
     schedules = []
 
-    # 매일 결제 예약 (365일)
-    for i in range(365):  # 1년 동안 매일 예약
+    for i in range(12):  # 1년 동안 예약
         schedule_date = start_date + relativedelta(days=i)
-        timestamp = int(datetime.now().timestamp())
-        merchant_uid = f"{billing_key.merchant_uid}_{i+2}_{timestamp}"  # 고유한 merchant_uid 생성
+        merchant_uid = f"{billing_key.merchant_uid}_{i+2}"
 
-        # PaymentHistory에 저장 (예약된 결제 정보)
         PaymentHistory.objects.create(
             user=user,
             billing_key=billing_key,
-            imp_uid=f"scheduled_{merchant_uid}",  # 임시 imp_uid
+            imp_uid=f"scheduled_{merchant_uid}",
             merchant_uid=merchant_uid,
             merchant_name=f"{billing_key.plan} 구독 결제 (예약)",
             amount=billing_key.amount,
@@ -191,7 +181,6 @@ def schedule_payments_for_user(user):
             created_at=timezone.now(),
         )
 
-        # 포트원 API에 전송할 결제 예약 데이터 생성
         schedule = {
             "merchant_uid": merchant_uid,
             "schedule_at": int(schedule_date.timestamp()),
@@ -203,7 +192,6 @@ def schedule_payments_for_user(user):
         }
         schedules.append(schedule)
 
-    # 포트원 결제 예약 API 요청
     schedule_url = "https://api.iamport.kr/subscribe/payments/schedule"
     schedule_data = {"customer_uid": billing_key.customer_uid, "schedules": schedules}
 
@@ -211,10 +199,12 @@ def schedule_payments_for_user(user):
         schedule_url, json=schedule_data, headers={"Authorization": access_token}
     )
     schedule_result = schedule_response.json()
-    print(f"📥 스케줄 응답 데이터: {schedule_result}")
+    #print(f"📥 스케줄 응답 데이터: {schedule_result}")
 
     if schedule_result.get("code") != 0:
         raise ValidationError(f"스케줄 등록 실패: {schedule_result.get('message')}")
+
+
 
 '''
 def schedule_payments_for_user(user):

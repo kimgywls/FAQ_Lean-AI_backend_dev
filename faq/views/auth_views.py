@@ -15,7 +15,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 import random, logging, os, shutil
 from send_sms import send_aligo_sms
-from ..models import User, Store, Edit, Menu
+from ..models import User, Store, Edit, Menu, Subscription
 from ..serializers import (
     UserSerializer,
     StoreSerializer,
@@ -422,6 +422,12 @@ class DeactivateAccountView(APIView):
         """
         사용자 탈퇴 시 개인정보를 익명화하고 계정을 비활성화.
         """
+        
+        # 사용자 구독 확인
+        active_subscription = Subscription.objects.filter(user=user, is_active=True).first()
+        if active_subscription and not active_subscription.deactivation_date:
+            raise ValidationError("구독 해지 신청을 먼저 해주세요.")
+    
         # 사용자 정보 익명화
         user.username = f"deleted_user_{user.user_id}"  # 사용자 아이디를 익명화
         user.phone = f"000-0000-0000_{user.user_id}"  # 핸드폰 번호 삭제 또는 익명화
