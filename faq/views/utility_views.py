@@ -1,17 +1,20 @@
 # utility_views.py             
 # QR 코드 생성,  통계 및 보고서 관련 처리, 기타 부가 기능
+import logging, os, qrcode, zipfile
 from django.conf import settings
+from django.utils import timezone
 from rest_framework import status
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-import requests, logging, os, qrcode, uuid
+from rest_framework.parsers import MultiPartParser, FormParser
 from ..merged_csv import merge_csv_files
+from ..excel_processor import process_excel_and_save_to_db
 from ..analyze_utterances import get_most_common_utterances
 from ..analyze_utterances import save_most_common_utterances_graph
 from ..models import Store
-from ..serializers import ( EditSerializer)
+from ..serializers import ( RequestServiceSerializer)
 
 logger = logging.getLogger('faq')
 
@@ -176,6 +179,80 @@ class StatisticsView(APIView):
             return Response({"status": "error", "message": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+# 데이터 등록 API
+class RegisterDataView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+    parser_classes = (MultiPartParser, FormParser)
+
+    def post(self, request):
+        files = request.FILES.getlist('files') if 'files' in request.FILES else []
+
+        if not files:
+            return Response({"error": "업로드할 파일을 선택해주세요."}, status=status.HTTP_400_BAD_REQUEST)
+
+        results = []
+        allowed_extensions = {
+            "excel": [".xlsx", ".xls"],
+            "image": [".png", ".jpg", ".jpeg"],
+            "zip": [".zip"]
+        }
+
+        for file in files:
+            try:
+                # 파일을 임시 저장할 경로 설정
+                temp_dir = os.path.join(settings.MEDIA_ROOT, 'temp_uploads')
+                os.makedirs(temp_dir, exist_ok=True)
+                file_path = os.path.join(temp_dir, file.name)
+
+                # 파일 저장
+                with open(file_path, 'wb') as temp_file:
+                    for chunk in file.chunks():
+                        temp_file.write(chunk)
+
+                # Store ID 가져오기
+                store_id = request.user.stores.first().store_id
+                created_at = timezone.now().strftime('%Y-%m-%d %H:%M')
+
+                # 파일 확장자 확인
+                ext = os.path.splitext(file.name)[1].lower()
+
+                if ext in allowed_extensions["excel"]:
+                    # 엑셀 파일 처리
+                    result = process_excel_and_save_to_db(file_path, store_id) or {}
+                    results.append({"file": file.name, "status": "success", "message": "엑셀 파일이 성공적으로 처리되었습니다.", **result})
+
+                elif ext in allowed_extensions["image"]:
+                    # 이미지 파일 단순 저장
+                    results.append({"file": file.name, "status": "success", "message": "이미지 파일이 성공적으로 업로드되었습니다."})
+
+                elif ext in allowed_extensions["zip"]:
+                    # ZIP 파일 처리
+                    zip_extract_path = os.path.join(temp_dir, os.path.splitext(file.name)[0])
+                    os.makedirs(zip_extract_path, exist_ok=True)
+
+                    with zipfile.ZipFile(file_path, 'r') as zip_ref:
+                        zip_ref.extractall(zip_extract_path)
+
+                    extracted_files = os.listdir(zip_extract_path)
+                    results.append({"file": file.name, "status": "success", "message": f"ZIP 파일이 성공적으로 해제되었습니다. 포함된 파일: {', '.join(extracted_files)}"})
+
+                else:
+                    # 지원되지 않는 파일 형식
+                    results.append({"file": file.name, "status": "error", "message": "지원되지 않는 파일 형식입니다."})
+
+            except zipfile.BadZipFile:
+                logger.error(f"파일 손상: {file.name}")
+                results.append({"file": file.name, "status": "error", "message": "ZIP 파일이 손상되어 압축을 해제할 수 없습니다."})
+
+            except Exception as e:
+                logger.error(f"파일 처리 중 오류 발생: {file.name}, 오류: {e}")
+                results.append({"file": file.name, "status": "error", "message": f"파일을 처리하는 동안 문제가 발생했습니다. \n 다시 시도하거나 관리자에게 문의하세요."})
+
+        return Response({"results": results}, status=status.HTTP_200_OK)
+
+
+
 
 # 사용자 서비스 요청 API
 class RequestServiceView(APIView):
@@ -196,7 +273,7 @@ class RequestServiceView(APIView):
         # 여러 파일을 처리하기 위한 빈 리스트 준비
         saved_data = []
 
-        # 클라이언트에서 전달받은 데이터를 사용하여 'Edit' 객체를 생성
+        # 클라이언트에서 전달받은 데이터를 사용하여 'ServiceRequest' 객체를 생성
         if files:
             for file in files:
                 data = {
@@ -206,14 +283,14 @@ class RequestServiceView(APIView):
                     'file': file  # 각각의 파일을 데이터에 추가
                 }
 
-                edit_serializer = EditSerializer(data=data)
+                req_ser_serializer = RequestServiceSerializer(data=data)
                 
-                if edit_serializer.is_valid():
-                    edit_serializer.save()
-                    saved_data.append(edit_serializer.data)
+                if req_ser_serializer.is_valid():
+                    req_ser_serializer.save()
+                    saved_data.append(req_ser_serializer.data)
                 else:
-                    #logger.debug(f"에러 메시지 : {edit_serializer.errors}")
-                    return Response(edit_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                    #logger.debug(f"에러 메시지 : {req_ser_serializer.errors}")
+                    return Response(req_ser_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         else:
             # 파일이 없을 경우, 제목과 내용만 처리
             data = {
@@ -222,14 +299,14 @@ class RequestServiceView(APIView):
                 'content': request.data.get('content', '')
             }
 
-            edit_serializer = EditSerializer(data=data)
+            req_ser_serializer = RequestServiceSerializer(data=data)
 
-            if edit_serializer.is_valid():
-                edit_serializer.save()
-                saved_data.append(edit_serializer.data)
+            if req_ser_serializer.is_valid():
+                req_ser_serializer.save()
+                saved_data.append(req_ser_serializer.data)
             else:
-                #logger.debug(f"에러 메시지 : {edit_serializer.errors}")
-                return Response(edit_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                #logger.debug(f"에러 메시지 : {req_ser_serializer.errors}")
+                return Response(req_ser_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         return Response(saved_data, status=status.HTTP_201_CREATED)
 

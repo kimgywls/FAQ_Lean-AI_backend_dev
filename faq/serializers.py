@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import User, Store, Edit, Menu, BillingKey, Subscription, PaymentHistory
+from .models import User, Store, ServiceRequest, Menu, BillingKey, Subscription, PaymentHistory
 from django.contrib.auth.hashers import make_password
 from django.conf import settings
 import re
@@ -173,11 +173,10 @@ class PasswordCheckSerializer(serializers.Serializer):
 
         return value
 
-
-# 수정 사항과 관련된 시리얼라이저
-class EditSerializer(serializers.ModelSerializer):
+# 서비스 요청 사항과 관련된 시리얼라이저
+class RequestServiceSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Edit
+        model = ServiceRequest
         fields = ["id", "user", "title", "content", "file", "created_at"]
 
     # 데이터 검증

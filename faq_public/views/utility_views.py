@@ -2,13 +2,14 @@
 # QR 코드 생성,  통계 및 보고서 관련 처리, 기타 부가 기능
 from ..authentication import PublicUserJWTAuthentication
 from rest_framework import status
+from django.utils import timezone
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.conf import settings
 import logging, os, qrcode
 from ..models import Public
-from ..serializers import (PublicEditSerializer)
+from ..serializers import (PublicRequestServiceSerializer)
 from ..merged_csv import merge_csv_files
 from ..analyze_utterances import get_most_common_utterances
 from ..analyze_utterances import save_most_common_utterances_graph
@@ -134,6 +135,46 @@ class QrCodeImageView(APIView):
         except Exception as e:
             logger.error(f"Unexpected error: {e}", exc_info=True)  # 예외 정보 전체 로깅
             return Response({'error': 'An unexpected error occurred.'}, status=500)
+        
+
+# 데이터 등록 API
+class RegisterDataView(APIView):
+    authentication_classes = [PublicUserJWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        files = request.FILES.getlist('files') if 'files' in request.FILES else []
+
+        if not files:
+            return Response({"error": "파일을 업로드 해주세요."}, status=status.HTTP_400_BAD_REQUEST)
+
+        results = []
+
+        for file in files:
+            try:
+                # 파일을 임시 저장
+                temp_dir = os.path.join(settings.MEDIA_ROOT, 'temp_uploads')
+                os.makedirs(temp_dir, exist_ok=True)
+                file_path = os.path.join(temp_dir, file.name)
+                with open(file_path, 'wb') as temp_file:
+                    for chunk in file.chunks():
+                        temp_file.write(chunk)
+
+                # Store ID, 등록 시간 가져오기
+                store_id = request.user.stores.first().store_id
+                created_at = timezone.now().strftime('%Y-%m-%d %H:%M')
+                
+                # Excel 처리
+                result = process_excel_and_save_to_db(file_path, store_id, request.user, file.name, created_at)
+                results.append({"file": file.name, **result})
+
+            except Exception as e:
+                logger.error(f"Error processing file: {file.name}, Error: {e}")
+                results.append({"file": file.name, "status": "error", "message": str(e)})
+
+        return Response({"results": results}, status=status.HTTP_200_OK)
+
+
 
 
 # 요청 사항 등록 API
@@ -155,7 +196,7 @@ class RequestServiceView(APIView):
         # 여러 파일을 처리하기 위한 빈 리스트 준비
         saved_data = []
 
-        # 클라이언트에서 전달받은 데이터를 사용하여 'Edit' 객체를 생성
+        # 클라이언트에서 전달받은 데이터를 사용하여 'ServiceRequest' 객체를 생성
         if files:
             for file in files:
                 data = {
@@ -165,14 +206,14 @@ class RequestServiceView(APIView):
                     'file': file  # 각각의 파일을 데이터에 추가
                 }
 
-                edit_serializer = PublicEditSerializer(data=data)
+                req_ser_serializer = PublicRequestServiceSerializer(data=data)
                 
-                if edit_serializer.is_valid():
-                    edit_serializer.save()
-                    saved_data.append(edit_serializer.data)
+                if req_ser_serializer.is_valid():
+                    req_ser_serializer.save()
+                    saved_data.append(req_ser_serializer.data)
                 else:
-                    #logger.debug(f"에러 메시지 : {edit_serializer.errors}")
-                    return Response(edit_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                    #logger.debug(f"에러 메시지 : {req_ser_serializer.errors}")
+                    return Response(req_ser_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         else:
             # 파일이 없을 경우, 제목과 내용만 처리
             data = {
@@ -181,14 +222,14 @@ class RequestServiceView(APIView):
                 'content': request.data.get('content', '')
             }
 
-            edit_serializer = PublicEditSerializer(data=data)
+            req_ser_serializer = PublicRequestServiceSerializer(data=data)
 
-            if edit_serializer.is_valid():
-                edit_serializer.save()
-                saved_data.append(edit_serializer.data)
+            if req_ser_serializer.is_valid():
+                req_ser_serializer.save()
+                saved_data.append(req_ser_serializer.data)
             else:
-                #logger.debug(f"에러 메시지 : {edit_serializer.errors}")
-                return Response(edit_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                #logger.debug(f"에러 메시지 : {req_ser_serializer.errors}")
+                return Response(req_ser_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         return Response(saved_data, status=status.HTTP_201_CREATED)
 

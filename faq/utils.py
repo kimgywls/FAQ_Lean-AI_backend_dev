@@ -1,8 +1,6 @@
 # utils.py
 import requests, logging
-from datetime import datetime
 from django.conf import settings
-from django.db import transaction
 from django.utils import timezone
 from slack_sdk.webhook import WebhookClient
 from dateutil.relativedelta import relativedelta

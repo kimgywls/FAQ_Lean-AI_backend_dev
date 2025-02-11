@@ -152,8 +152,8 @@ class Public_Department(models.Model):
         return f"{self.department_name} ({self.public.public_name})"
 
 
-class Public_Edit(models.Model):
-    user = models.ForeignKey(Public_User, on_delete=models.CASCADE, related_name='public_edits')  # 요청을 보낸 사용자
+class Public_ServiceRequest(models.Model):
+    user = models.ForeignKey(Public_User, on_delete=models.CASCADE, related_name='public_ServiceRequests')  # 요청을 보낸 사용자
     title = models.CharField(max_length=255, null=True, blank=True)
     content = models.TextField(null=True, blank=True)
     file = models.FileField(upload_to=user_directory_path, null=True, blank=True)

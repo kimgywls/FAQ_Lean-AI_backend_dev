@@ -13,7 +13,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 import random, logging
 from send_sms import send_aligo_sms
-from ..models import Public_User, Public, Public_Department, Public_Edit, Public_Complaint
+from ..models import Public_User, Public, Public_Department, Public_ServiceRequest, Public_Complaint
 from ..serializers import (
     PublicUserSerializer, 
     PublicUsernameCheckSerializer, 
@@ -388,19 +388,19 @@ class DeactivateAccountView(APIView):
         user.deactivated_at = timezone.now()  # 비활성화 시간 기록
         user.save()
 
-        # 사용자와 관련된 Edit 데이터 익명화
-        self.anonymize_edits(user)
+        # 사용자와 관련된 ServiceRequest 데이터 익명화
+        self.anonymize_ServiceRequests(user)
 
     
-    def anonymize_edits(self, user):
+    def anonymize_ServiceRequests(self, user):
         """
-        탈퇴한 사용자의 Edit 데이터를 익명화 처리.
+        탈퇴한 사용자의 ServiceRequest 데이터를 익명화 처리.
         """
-        edits = Public_Edit.objects.filter(user=user)
-        for edit in edits:
-            edit.title = f'익명화된 제목_{edit.id}'
-            edit.content = '익명화된 내용'
-            edit.file = None  # 파일 삭제
-            edit.save()
+        ServiceRequests = Public_ServiceRequest.objects.filter(user=user)
+        for ServiceRequest in ServiceRequests:
+            ServiceRequest.title = f'익명화된 제목_{ServiceRequest.id}'
+            ServiceRequest.content = '익명화된 내용'
+            ServiceRequest.file = None  # 파일 삭제
+            ServiceRequest.save()
 
  

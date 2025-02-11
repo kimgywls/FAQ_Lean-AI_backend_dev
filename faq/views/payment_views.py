@@ -1,4 +1,5 @@
-import requests, traceback, copy
+import requests, traceback
+from datetime import timedelta
 from django.db import transaction
 from django.utils import timezone
 from rest_framework.views import APIView
@@ -196,8 +197,10 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
                 # ✅ BillingKey의 `deactivation_date`만 설정 (실제 취소는 이후 실행)
                 billing_key.deactivation_date = next_billing_date
                 billing_key.save()
+                
+            last_available_date = next_billing_date - timedelta(days=1)
 
-            return Response({"message": f"구독이 해지되었습니다. \n {next_billing_date}까지 이용 가능합니다."}, status=200)
+            return Response({"message": f"구독이 해지되었습니다. \n {last_available_date}까지 이용 가능합니다."}, status=200)
 
         except Subscription.DoesNotExist:
             return Response({"error": "구독 정보 없음"}, status=404)

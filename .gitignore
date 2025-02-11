@@ -5,12 +5,10 @@
 *.log
 *.pot
 *.pyc
+*.sqlite3
 __pycache__/
 local_settings.py
 faq_backend/settings.py
-faq_db.sqlite3
-faq_public_db.sqlite3
-faq_db_no_billingkey.sqlite3
 db.sqlite3-journal
 media
 my_settings.py
@@ -299,4 +297,4 @@ chatbot/lean-ai-faq-54a04f14f2f0.json
 # 환경 변수
 .env.local
 
-faq_backend/static/
+faq_backend/static/faq_db_backup_250210.sqlite3

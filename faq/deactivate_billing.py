@@ -1,3 +1,4 @@
+# deactivate_billing.py
 import os
 import sys
 import django
@@ -13,15 +14,18 @@ sys.path.append("/home/hjkim0213/dev/FAQ_Lean-AI_backend_dev/faq_backend")
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "faq_backend.settings")
 
 # ✅ Django 초기화
-django.setup() 
+django.setup()
 
 from faq.utils import get_portone_access_token
-from faq.models import BillingKey, Subscription, PaymentHistory
+from faq.models import BillingKey, Subscription, PaymentHistory, User
+from faq.views.auth_views import DeactivateAccountView
 
- 
+
 def deactivate_expired_billing_keys():
     today = timezone.now().date()
-    expired_keys = BillingKey.objects.filter(deactivation_date__lte=today, is_active=True)
+    expired_keys = BillingKey.objects.filter(
+        deactivation_date__lte=today, is_active=True
+    )
 
     if not expired_keys.exists():
         print("✅ 비활성화할 BillingKey가 없습니다.")
@@ -35,14 +39,12 @@ def deactivate_expired_billing_keys():
             cancel_response = requests.post(
                 cancel_url,
                 json={"customer_uid": key.customer_uid},
-                headers={"Authorization": f"Bearer {access_token}"}
+                headers={"Authorization": f"Bearer {access_token}"},
             )
             print(f"🛑 포트원 예약 결제 취소 응답: {cancel_response.json()}")
 
             canceled_payments = PaymentHistory.objects.filter(
-                user=key.user,
-                billing_key=key,
-                status="scheduled"
+                user=key.user, billing_key=key, status="scheduled"
             ).update(status="canceled")
 
             print(f"🛑 {canceled_payments}개의 예약된 결제 취소 완료")
@@ -52,7 +54,7 @@ def deactivate_expired_billing_keys():
             key.deactivation_date = None  # deactivation_date 초기화
             key.save()
             print(f"✅ BillingKey {key.customer_uid} 비활성화 완료.")
-            
+
             # 사용자의 billing_key 필드를 NULL로 설정
             user = key.user
             if user.billing_key == key:
@@ -61,11 +63,23 @@ def deactivate_expired_billing_keys():
                 print(f"✅ {user.username}의 billing_key 필드가 NULL로 변경되었습니다.")
 
             # 구독 정보 비활성화
-            subscription = Subscription.objects.filter(user=key.user, is_active=True).first()
+            subscription = Subscription.objects.filter(
+                user=key.user, is_active=True
+            ).first()
             if subscription:
                 subscription.is_active = False
                 subscription.save()
                 print(f"✅ {key.user.username}의 구독이 비활성화되었습니다.")
+
+        # ✅ 구독 해지된 후 탈퇴 요청된 사용자 자동 탈퇴
+        users_to_deactivate = User.objects.filter(is_deactivation_requested=True).exclude( 
+            subscription__is_active=True  # 활성 구독이 없는 사용자만 선택
+        )
+
+        for user in users_to_deactivate:
+            print(f"🔹 {user.username} 사용자의 탈퇴 처리 시작...")
+            DeactivateAccountView().deactivate_and_anonymize_user(user)
+            print(f"✅ {user.username} 탈퇴 완료.")
 
 
 if __name__ == "__main__":

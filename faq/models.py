@@ -1,7 +1,7 @@
 from django.db import models
 from django.utils.text import slugify
 from django.conf import settings
-import os , uuid, json 
+import os, uuid, json
 from datetime import date
 from dateutil.relativedelta import relativedelta
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager
@@ -69,6 +69,8 @@ class User(AbstractBaseUser):
         related_name="user_billing_key",
     )
 
+    is_deactivation_requested = models.BooleanField(default=False)  # 탈퇴 요청 여부
+    deactivated_at = models.DateTimeField(null=True, blank=True)    # 탈퇴 완료된 시간간
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     is_superuser = models.BooleanField(default=False)
@@ -134,9 +136,9 @@ class Store(models.Model):
         return self.store_name
 
 
-class Edit(models.Model):
+class ServiceRequest(models.Model):
     user = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="edits"
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="ServiceRequests"
     )  # 요청을 보낸 사용자
     title = models.CharField(max_length=255, null=True, blank=True)
     content = models.TextField(null=True, blank=True)
@@ -227,7 +229,7 @@ class BillingKey(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     subscription_cycle = models.PositiveIntegerField(default=1)  # 기본 1개월 단위 결제
     is_active = models.BooleanField(default=True)
-    deactivation_date = models.DateField(null=True, blank=True) # 비활성화 날짜
+    deactivation_date = models.DateField(null=True, blank=True)  # 비활성화 날짜
 
     def change_card(self, new_customer_uid):
         """카드 정보를 변경 (customer_uid 갱신)"""
@@ -262,3 +264,5 @@ class PaymentHistory(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+
+

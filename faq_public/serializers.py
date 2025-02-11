@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Public_User, Public, Public_Edit, Public_Complaint, Public_Department
+from .models import Public_User, Public, Public_ServiceRequest, Public_Complaint, Public_Department
 from rest_framework.exceptions import ValidationError
 from django.contrib.auth.hashers import make_password
 import re
@@ -124,9 +124,9 @@ class PublicPasswordCheckSerializer(serializers.Serializer):
 
 
 # 수정 사항과 관련된 시리얼라이저
-class PublicEditSerializer(serializers.ModelSerializer):
+class PublicRequestServiceSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Public_Edit
+        model = Public_ServiceRequest
         fields = ['id', 'user', 'title', 'content', 'file', 'created_at']
 
     def validate(self, data):

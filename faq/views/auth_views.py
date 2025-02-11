@@ -15,7 +15,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 import random, logging, os, shutil
 from send_sms import send_aligo_sms
-from ..models import User, Store, Edit, Menu, Subscription
+from ..models import User, Store, ServiceRequest, Menu, Subscription, PaymentHistory
 from ..serializers import (
     UserSerializer,
     StoreSerializer,
@@ -399,7 +399,8 @@ class VerifyCodeView(APIView):
 class DeactivateAccountView(APIView):
     """
     사용자를 탈퇴시키는 뷰.
-    사용자 계정을 비활성화하고 개인정보를 익명화 처리.
+    즉시 탈퇴하지 않고, 구독 해지가 완료될 때까지 기다린 후 탈퇴 진행
+    개인정보를 익명화 처리.
     """
 
     authentication_classes = [JWTAuthentication]
@@ -407,27 +408,48 @@ class DeactivateAccountView(APIView):
 
     def post(self, request):
         """
-        계정을 비활성화하고 익명화
+        회원 탈퇴 요청 (즉시 탈퇴 X, 구독 해지가 완료된 후 탈퇴)
         """
         user = request.user
 
-        # 사용자 탈퇴(비활성화 + 익명화) 처리
+        # 이미 탈퇴 요청한 경우
+        if user.is_deactivation_requested:
+            return Response(
+                {"message": "이미 탈퇴 요청이 접수되었습니다."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 활성 구독이 있는지 확인
+        active_subscription = Subscription.objects.filter(user=user, is_active=True).first()
+
+        if active_subscription:
+            # ⛔ 구독 해지 신청이 되지 않은 경우 → 탈퇴 불가
+            if not active_subscription.deactivation_date:
+                return Response(
+                    {"message": "구독 해지 신청 후 탈퇴 요청이 가능합니다."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # ✅ 구독 해지 신청이 된 경우 → 탈퇴 요청 상태 저장 (즉시 탈퇴 X)
+            user.is_deactivation_requested = True
+            user.save(update_fields=["is_deactivation_requested"])
+            return Response(
+                {"message": f"탈퇴 요청이 접수되었습니다. \n 구독 해지 후 자동 탈퇴됩니다."},
+                status=status.HTTP_200_OK,
+            )
+
+        # ✅ 구독이 없거나, 이미 해지된 경우 → 즉시 탈퇴 가능
         self.deactivate_and_anonymize_user(user)
-
         return Response(
-            {"message": "계정이 성공적으로 탈퇴되었습니다."}, status=status.HTTP_200_OK
+            {"message": "계정이 성공적으로 탈퇴되었습니다."},
+            status=status.HTTP_200_OK,
         )
-
+    
     def deactivate_and_anonymize_user(self, user):
         """
         사용자 탈퇴 시 개인정보를 익명화하고 계정을 비활성화.
         """
-        
-        # 사용자 구독 확인
-        active_subscription = Subscription.objects.filter(user=user, is_active=True).first()
-        if active_subscription and not active_subscription.deactivation_date:
-            raise ValidationError("구독 해지 신청을 먼저 해주세요.")
-    
+
         # 사용자 정보 익명화
         user.username = f"deleted_user_{user.user_id}"  # 사용자 아이디를 익명화
         user.phone = f"000-0000-0000_{user.user_id}"  # 핸드폰 번호 삭제 또는 익명화
@@ -438,12 +460,15 @@ class DeactivateAccountView(APIView):
         user.is_active = False
         user.deactivated_at = timezone.now()  # 비활성화 시간 기록
         user.save()
+        
+        # 사용자 결제 내역 익명화
+        self.anonymize_payment_history(user)
 
         # 사용자가 소유한 가게 및 관련된 데이터 익명화
         self.anonymize_stores(user)
 
-        # 사용자와 관련된 Edit 데이터 익명화
-        self.anonymize_edits(user)
+        # 사용자와 관련된 ServiceRequest 데이터 익명화
+        self.anonymize_ServiceRequests(user)
 
         # 사용자 폴더 삭제
         self.delete_user_folder(user)
@@ -466,16 +491,16 @@ class DeactivateAccountView(APIView):
                 menu.image = ""
                 menu.save()
 
-    def anonymize_edits(self, user):
+    def anonymize_ServiceRequests(self, user):
         """
-        탈퇴한 사용자의 Edit 데이터를 익명화 처리.
+        탈퇴한 사용자의 ServiceRequest 데이터를 익명화 처리.
         """
-        edits = Edit.objects.filter(user=user)
-        for edit in edits:
-            edit.title = f"익명화된 제목_{edit.id}"
-            edit.content = "익명화된 내용"
-            edit.file = None  # 파일 삭제
-            edit.save()
+        ServiceRequests = ServiceRequest.objects.filter(user=user)
+        for ServiceRequest in ServiceRequests:
+            ServiceRequest.title = f"익명화된 제목_{ServiceRequest.id}"
+            ServiceRequest.content = "익명화된 내용"
+            ServiceRequest.file = None  # 파일 삭제
+            ServiceRequest.save()
 
     def delete_user_folder(self, user):
         """
@@ -532,3 +557,18 @@ class DeactivateAccountView(APIView):
             # QR 코드 파일이 존재하면 삭제
             if os.path.exists(store_qrcodes_path):
                 os.remove(store_qrcodes_path)
+                
+                
+    def anonymize_payment_history(self, user):
+        """
+        탈퇴한 사용자의 결제 내역을 익명화 처리.
+        """
+        payments = PaymentHistory.objects.filter(user=user)
+        for payment in payments:
+            payment.imp_uid = f"deleted_{payment.id}_imp"
+            payment.merchant_uid = f"deleted_{payment.id}_merchant"
+            payment.merchant_name = "익명화된 결제 내역"
+            payment.user = None  # 사용자를 NULL 처리하여 연결 해제
+            payment.save()
+
+
