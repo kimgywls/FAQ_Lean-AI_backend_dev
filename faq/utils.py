@@ -157,14 +157,14 @@ def schedule_payments_for_user(user):
     )
 
     if last_scheduled_payment:
-        start_date = last_scheduled_payment.scheduled_at + relativedelta(days=1)
+        start_date = last_scheduled_payment.scheduled_at + relativedelta(months=1)
     else:
-        start_date = timezone.now() + relativedelta(days=1)
+        start_date = timezone.now() + relativedelta(months=1)
 
     schedules = []
 
     for i in range(12):  # 1년 동안 예약
-        schedule_date = start_date + relativedelta(days=i)
+        schedule_date = start_date + relativedelta(months=i)
         merchant_uid = f"{billing_key.merchant_uid}_{i+2}"
 
         PaymentHistory.objects.create(
@@ -202,82 +202,3 @@ def schedule_payments_for_user(user):
     if schedule_result.get("code") != 0:
         raise ValidationError(f"스케줄 등록 실패: {schedule_result.get('message')}")
 
-
-
-'''
-def schedule_payments_for_user(user):
-    """
-    사용자의 정기 결제를 12개월 동안 자동으로 예약하는 함수.
-
-    :param user: 유저 객체
-    :raises: ValidationError - BillingKey가 없거나 스케줄 등록 실패 시 예외 발생
-    """
-    print(f"🟢 스케줄링 시작: {user.username}")
-
-    # 사용자 BillingKey 확인
-    billing_key = BillingKey.objects.filter(user=user, is_active=True).first()
-    if not billing_key:
-        raise ValidationError("활성화된 BillingKey가 없습니다.")
-
-    access_token = get_portone_access_token()
-    print(f"🔑 IAMPORT Access Token: {access_token}")
-
-    # 기존 예약된 결제 중 가장 마지막 결제 날짜 조회
-    last_scheduled_payment = (
-        PaymentHistory.objects.filter(user=user, status="scheduled")
-        .order_by("-scheduled_at")
-        .first()
-    )
-
-    if last_scheduled_payment:
-        start_date = last_scheduled_payment.scheduled_at + relativedelta(months=1)
-    else:
-        start_date = timezone.now() + relativedelta(months=1)
-
-    schedules = []
-
-    for i in range(12):
-        schedule_date = start_date + relativedelta(months=i)
-        timestamp = int(datetime.now().timestamp())
-        merchant_uid = f"{billing_key.merchant_uid}_{i+2}_{timestamp}"  # 2부터 시작
-
-        # PaymentHistory에 저장 (예약된 결제 정보)
-        PaymentHistory.objects.create(
-            user=user,
-            billing_key=billing_key,
-            imp_uid=f"scheduled_{merchant_uid}",  # 임시 imp_uid
-            merchant_uid=merchant_uid,
-            merchant_name=f"{billing_key.plan} 구독 결제 (예약)",
-            amount=billing_key.amount,
-            status="scheduled",
-            scheduled_at=schedule_date,
-            created_at=timezone.now(),
-        )
-
-        # 포트원 API에 전송할 결제 예약 데이터 생성
-        schedule = {
-            "merchant_uid": merchant_uid,
-            "schedule_at": int(schedule_date.timestamp()),
-            "amount": float(billing_key.amount),
-            "name": f"{billing_key.plan} 구독 결제 (예약)",
-            "buyer_email": user.email,
-            "buyer_name": user.name,
-            "buyer_tel": user.phone,
-        }
-        schedules.append(schedule)
-
-    # 포트원 결제 예약 API 요청
-    schedule_url = "https://api.iamport.kr/subscribe/payments/schedule"
-    schedule_data = {"customer_uid": billing_key.customer_uid, "schedules": schedules}
-
-    schedule_response = requests.post(
-        schedule_url, json=schedule_data, headers={"Authorization": access_token}
-    )
-    schedule_result = schedule_response.json()
-    print(f"📥 스케줄 응답 데이터: {schedule_result}")
-
-    if schedule_result.get("code") != 0:
-        raise ValidationError(f"스케줄 등록 실패: {schedule_result.get('message')}")
-
-
-'''
