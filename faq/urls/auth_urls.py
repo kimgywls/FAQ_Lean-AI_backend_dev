@@ -4,6 +4,7 @@ from ..views import (
     SignupView, LoginView, UsernameCheckView,
     SendVerificationCodeView, VerifyCodeView,
     PasswordResetView, DeactivateAccountView,
+    OAuthLoginAPIView, SocialSignupView, OAuthJWTTokenView
 
 )
 
@@ -15,5 +16,8 @@ urlpatterns = [
     path('verify-code/', VerifyCodeView.as_view(), name='verify_code'),        
     path('reset-password/', PasswordResetView.as_view(), name='reset_password'),
     path('deactivate-account/', DeactivateAccountView.as_view(), name='deactivate_account'),
+    path("oauth-token/", OAuthLoginAPIView.as_view(), name="oauth_token"),
+    path("social-signup/", SocialSignupView.as_view(), name="social_signup"),
+    path("oauth-jwt-token/", OAuthJWTTokenView.as_view(), name="oauth_jwt_token"),    
     
 ]

@@ -5,6 +5,7 @@ from django.core.cache import cache
 from django.db import transaction
 from django.conf import settings
 from django.utils.text import slugify
+from django.db.utils import IntegrityError
 from urllib.parse import quote
 from django.utils import timezone
 from rest_framework import status
@@ -13,7 +14,7 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
-import random, logging, os, shutil
+import random, logging, os, shutil, requests
 from send_sms import send_aligo_sms
 from ..models import User, Store, ServiceRequest, Menu, Subscription, PaymentHistory
 from ..serializers import (
@@ -31,6 +32,8 @@ logger = logging.getLogger("faq")
 # 회원가입 API
 class SignupView(APIView):
     def post(self, request):
+        #print(request.data)  # 요청 데이터 확인
+
         user_data = {
             "username": request.data.get("username"),
             "password": request.data.get("password"),
@@ -46,6 +49,10 @@ class SignupView(APIView):
             "store_address": request.data.get("store_address"),
             "slug": slugify(quote(request.data.get("store_name", ""))),
         }
+
+        #print(user_data)
+
+        #print(store_data)
 
         if (
             Store.objects.filter(store_name=store_data["store_name"]).exists()
@@ -63,6 +70,7 @@ class SignupView(APIView):
             with transaction.atomic():
                 user_serializer = UserSerializer(data=user_data)
                 if not user_serializer.is_valid():
+                    print(user_serializer.errors)  # 유효성 검사 오류 출력
                     return Response(
                         {
                             "success": False,
@@ -77,6 +85,7 @@ class SignupView(APIView):
                 store_data["user"] = user.user_id
                 store_serializer = StoreSerializer(data=store_data)
                 if not store_serializer.is_valid():
+                    print(store_serializer.errors)  # 유효성 검사 오류 출력
                     return Response(
                         {
                             "success": False,
@@ -93,12 +102,12 @@ class SignupView(APIView):
                 )
 
         except Exception as e:
+            print(str(e))  # 예외 메시지 출력
             logger.error(f"회원가입 오류: {str(e)}")
             return Response(
                 {"success": False, "message": "서버 오류 발생"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
-
 
 # 로그인 API
 class LoginView(APIView):
@@ -570,5 +579,331 @@ class DeactivateAccountView(APIView):
             payment.merchant_name = "익명화된 결제 내역"
             payment.user = None  # 사용자를 NULL 처리하여 연결 해제
             payment.save()
+
+
+# 소셜 로그인 API
+class SocialSignupView(APIView):
+    def post(self, request):
+        """
+        ✅ 소셜 로그인 후 회원가입을 처리하는 API
+        """
+        #print(request.data)
+
+        # ✅ 사용자 데이터 변환
+        user_data = {
+            "username": request.data.get("username"),
+            "email": request.data.get("email"),
+            "name": request.data.get("name"),
+            "dob": request.data.get("dob"),
+            "phone": request.data.get("phone"),
+            "password": None,  # 🔥 소셜 로그인 사용자는 비밀번호 없이 가입
+            "billing_key": None,
+        }
+
+        # ✅ 스토어 데이터 변환
+        store_data = {
+            "store_category": request.data.get("store_category"),
+            "store_name": request.data.get("store_name"),
+            "store_address": request.data.get("store_address"),
+            "slug": slugify(quote(request.data.get("store_name", ""))),
+        }
+
+        #print("=== [DEBUG] 변환된 사용자 데이터 ===")
+        #print(user_data)
+
+        # ✅ 스토어 중복 체크
+        if Store.objects.filter(store_name=store_data["store_name"]).exists():
+            return Response(
+                {"success": False, "message": "이미 존재하는 스토어 이름입니다."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            with transaction.atomic():
+                # ✅ 사용자 데이터 검증 및 저장
+                user_serializer = UserSerializer(data=user_data)
+                if not user_serializer.is_valid():
+                    print(user_serializer.errors)
+                    return Response(
+                        {"success": False, "message": "회원가입 실패", "errors": user_serializer.errors},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                user = user_serializer.save()
+
+
+                # ✅ 스토어 데이터 검증 및 저장
+                store_serializer = StoreSerializer(data=store_data, context={"user": user})
+
+                if not store_serializer.is_valid():
+                    print(store_serializer.errors)
+                    return Response(
+                        {"success": False, "message": "스토어 생성 실패", "errors": store_serializer.errors},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                store = store_serializer.save(user=user)  # user 포함해서 저장됨
+
+                return Response(
+                    {"success": True, "message": "회원가입 성공", "store_id": store.store_id},
+                    status=status.HTTP_201_CREATED,
+                )
+
+        except Exception as e:
+            print(str(e))
+            logger.error(f"소셜 회원가입 오류: {str(e)}")
+            return Response(
+                {"success": False, "message": "서버 오류 발생"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+
+
+
+class OAuthLoginAPIView(APIView):
+    """
+    SNS에서 발급받은 `code`를 이용해 Access Token을 요청
+    """
+
+    def post(self, request):
+        provider = request.data.get("provider")  # 'google', 'kakao', 'naver'
+        code = request.data.get("code")
+
+        if not provider or not code:
+            return Response({"error": "provider와 code가 필요합니다."}, status=status.HTTP_400_BAD_REQUEST)
+
+        oauth_settings = {
+            "kakao": {
+                "token_url": "https://kauth.kakao.com/oauth/token",
+                "client_id": settings.SOCIAL_AUTH_KAKAO_KEY,
+                "client_secret": settings.SOCIAL_AUTH_KAKAO_SECRET,
+                "redirect_uri": settings.SOCIAL_AUTH_KAKAO_REDIRECT_URI,
+            },
+            "naver": {
+                "token_url": "https://nid.naver.com/oauth2.0/token",
+                "client_id": settings.SOCIAL_AUTH_NAVER_KEY,
+                "client_secret": settings.SOCIAL_AUTH_NAVER_SECRET,
+                "redirect_uri": settings.SOCIAL_AUTH_NAVER_REDIRECT_URI,
+            },
+        }
+
+        if provider not in oauth_settings:
+            return Response({"error": "지원되지 않는 provider입니다."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            # ✅ Access Token 요청
+            token_data = {
+                "grant_type": "authorization_code",
+                "client_id": oauth_settings[provider]["client_id"],
+                "client_secret": oauth_settings[provider]["client_secret"],
+                "redirect_uri": oauth_settings[provider]["redirect_uri"],
+                "code": code,
+            }
+            token_response = requests.post(oauth_settings[provider]["token_url"], data=token_data)
+            token_json = token_response.json()
+
+            #print(f"✅ [OAuthLoginAPIView] token_response: {token_response.status_code}, {token_json}")
+
+            if "access_token" not in token_json:
+                return Response({"error": "OAuth 토큰 요청 실패", "details": token_json}, status=status.HTTP_400_BAD_REQUEST)
+
+            access_token = token_json["access_token"]
+
+            # ✅ 사용자 정보 가져오기
+            user_info = self.get_user_info(provider, access_token)
+            if not user_info:
+                return Response({"error": "사용자 정보를 가져오지 못했습니다."}, status=status.HTTP_400_BAD_REQUEST)
+
+            # ✅ phone 정규화 (네이버: mobile, 카카오: phone_number)
+            def normalize_phone(phone):
+                if phone and phone.startswith("+82"):
+                    return "010" + phone[3:]
+                return phone.replace("-", "").strip()  # 하이픈 제거
+
+            user_info["phone"] = normalize_phone(user_info.get("phone", ""))
+
+            # 생년월일 정규화
+            def normalize_dob(birthyear, birthday):
+                if not birthyear or not birthday:
+                    return None  # 생년월일이 없는 경우 None 반환
+                return f"{birthyear}-{birthday}"  # YYYY-MM-DD 형태
+
+            user_info["dob"] = normalize_dob(user_info.get("birthyear"), user_info.get("birthday"))
+
+            # ✅ 중복 사용자 체크
+            try:
+                user = User.objects.get(phone=user_info["phone"])
+                social_signup = not user.stores.exists()
+
+                # ✅ 사용자의 첫 번째 store 정보 가져오기
+                store = user.stores.first()
+                store_id = store.store_id if store else None
+
+                return Response({
+                    "access_token": access_token,
+                    "social_signup": social_signup,
+                    "user_data": {
+                        "username": user.username,
+                        "email": user.email,
+                        "name": user.name,
+                        "dob": user.dob,
+                        "phone": user.phone,
+                        "billing_key": user.billing_key if user.billing_key else None,
+                    },
+                    "store_id": store_id,  
+                }, status=status.HTTP_200_OK)
+
+            except User.DoesNotExist:
+                return Response({
+                    "access_token": access_token,
+                    "social_signup": True,
+                    "user_data": {
+                        "username": f"{provider}_{user_info['id']}",
+                        "email": user_info.get("email", ""),
+                        "name": user_info.get("name", ""),
+                        "dob": user_info.get("dob"),
+                        "phone": user_info.get("phone", ""),
+                    },
+                }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            print(f"❌ [OAuthLoginAPIView] 서버 오류 발생: {str(e)}")
+            logger.error(f"OAuthLoginAPIView 서버 오류: {str(e)}")
+            return Response({"error": "서버 내부 오류 발생", "details": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def get_user_info(self, provider, access_token):
+        """
+        ✅ OAuth Provider 별 사용자 정보 가져오기
+        """
+        try:
+            headers = {"Authorization": f"Bearer {access_token}"}
+
+            if provider == "kakao":
+                response = requests.get("https://kapi.kakao.com/v2/user/me", headers=headers)
+                data = response.json()
+                #print(f"kakao response data: {data}")
+
+                kakao_account = data.get("kakao_account", {})
+
+                if not kakao_account.get("name"):
+                    raise ValueError("이름 정보 제공에 동의해주세요.")
+
+                if not kakao_account.get("phone_number"):
+                    raise ValueError("휴대폰 번호 정보 제공에 동의해주세요.")
+
+                return {
+                    "id": data["id"],
+                    "name": kakao_account["name"],
+                    "phone": kakao_account["phone_number"],
+                    "email": kakao_account["email"]
+                }
+
+            elif provider == "naver":
+                response = requests.get("https://openapi.naver.com/v1/nid/me", headers=headers)
+                data = response.json().get("response", {})
+                #print(f"naver response data: {data}")
+
+                if "id" not in data:
+                    raise ValueError("네이버 사용자 정보가 유효하지 않습니다.")
+
+                return {
+                    "id": str(data["id"])[:10],
+                    "email": data.get("email"),
+                    "name": data.get("name"),
+                    "birthyear": data.get("birthyear"),
+                    "birthday": data.get("birthday"),
+                    "phone": data.get("mobile"),
+                }
+
+        except Exception as e:
+            print(f"❌ [OAuthLoginAPIView] 사용자 정보 요청 중 오류 발생: {str(e)}")
+            return None  # 예외 발생 시 None 반환
+
+
+
+class OAuthJWTTokenView(APIView):
+    """
+    ✅ 소셜 로그인 후 JWT 토큰으로 변환해주는 API
+    """
+
+    def post(self, request):
+        print(f"request.data: {request.data}")
+
+        try:
+            # ✅ 요청 데이터 확인
+            access_token = request.data.get("access_token")
+            username = request.data.get("username")
+            phone = request.data.get("phone")
+
+            #print(f"✅ access_token: {access_token}")
+            #print(f"✅ username: {username}")
+            #print(f"✅ phone: {phone}")
+
+            if not access_token or (not username and not phone):
+                print("❌ [ERROR] 필수 파라미터 누락")
+                return Response(
+                    {"success": False, "message": "필수 파라미터가 누락되었습니다."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # ✅ 사용자 조회 (username 또는 전화번호로)
+            try:
+                if username:
+                    user = User.objects.get(username=username)
+                else:
+                    user = User.objects.get(phone=phone)
+
+                # ✅ JWT 토큰 생성
+                refresh = RefreshToken.for_user(user)
+
+                # ✅ 응답 데이터 구성
+                store = user.stores.first()  # 사용자의 첫 번째 스토어 가져오기
+
+                response_data = {
+                    "success": True,
+                    "access": str(refresh.access_token),
+                    "refresh": str(refresh),
+                    "user_data": {
+                        "username": user.username,
+                        "email": user.email,
+                        "name": user.name,
+                        "dob": user.dob,
+                        "phone": user.phone,
+                        "billing_key": user.billing_key if hasattr(user, 'billing_key') else None
+                    },
+                }
+
+                # ✅ 스토어 정보 추가
+                if store:
+                    response_data["store_id"] = store.store_id
+                    response_data["store_name"] = store.store_name
+
+                # ✅ 구독 정보 추가
+                if hasattr(user, 'subscription') and user.subscription:
+                    response_data["subscription"] = {
+                        "is_active": user.subscription.is_active,
+                        "expiry_date": user.subscription.expiry_date.isoformat() if user.subscription.expiry_date else None,
+                        "plan": user.subscription.plan
+                    }
+                else:
+                    response_data["subscription"] = {"is_active": False}
+
+                #print(f"✅ 최종 응답 데이터: {response_data}")
+                return Response(response_data, status=status.HTTP_200_OK)
+
+            except User.DoesNotExist:
+                print("❌ [ERROR] 해당 사용자를 찾을 수 없음")
+                return Response(
+                    {"success": False, "message": "해당 사용자를 찾을 수 없습니다."},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+        except Exception as e:
+            print(f"❌ [ERROR] JWT 토큰 변환 중 오류 발생: {str(e)}")
+            logger.error(f"JWT 토큰 변환 중 오류 발생: {str(e)}")
+            return Response(
+                {"success": False, "message": "서버 오류가 발생했습니다.", "details": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 

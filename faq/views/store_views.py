@@ -22,6 +22,7 @@ class StoreViewSet(ViewSet):
         """
         단일 매장 정보 조회
         """
+        print("🔹 [DEBUG] request.user:", request.user)
         try:
             store = Store.objects.get(store_id=pk, user=request.user)
             store_data = StoreSerializer(store).data

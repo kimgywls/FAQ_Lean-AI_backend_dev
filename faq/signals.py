@@ -7,13 +7,13 @@ from .utils import send_slack_notification  # Slack 알림 함수 import
 import logging, os
 
 logger = logging.getLogger('faq')
-
+'''
 @receiver(post_save, sender=User)
 def send_user_creation_notification(sender, instance, created, **kwargs):
     if created:
         message = f"새로운 사용자 {instance.username}가 가입했습니다!"
         send_slack_notification(message)
-
+'''
 
 @receiver(post_save, sender=ServiceRequest)
 def send_ServiceRequest_notification(sender, instance, created, **kwargs):

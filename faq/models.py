@@ -35,7 +35,8 @@ class UserManager(BaseUserManager):
         if not username:
             raise ValueError("사용자 이름은 필수입니다.")
         user = self.model(username=username, **extra_fields)
-        user.set_password(password)
+        if password:  # 소셜 로그인 사용자의 경우 password 없이 생성 가능
+            user.set_password(password)
         user.save(using=self._db)
         return user
 
@@ -47,8 +48,9 @@ class UserManager(BaseUserManager):
 
 class User(AbstractBaseUser):
     user_id = models.AutoField(primary_key=True)
-    username = models.CharField(max_length=20, unique=True)
+    username = models.CharField(max_length=50, unique=True)
     name = models.CharField(max_length=20, blank=True, null=True)
+    password = models.CharField(max_length=20, blank=True, null=True)
     dob = models.DateField(blank=True, null=True)
     phone = models.CharField(max_length=20, unique=True)
     email = models.EmailField(max_length=30, blank=True, null=True)

@@ -1,7 +1,9 @@
 import requests, traceback
 from datetime import timedelta
-from django.db import transaction
+from django.conf import settings
 from django.utils import timezone
+from django.db import transaction
+from urllib.parse import urlencode 
 from rest_framework.views import APIView
 from rest_framework import status, viewsets
 from rest_framework.response import Response
@@ -25,350 +27,159 @@ from ..utils import (
 )
 
 
-class SubscriptionViewSet(viewsets.ModelViewSet):
+KCP_BILLING_URL = "https://stg-spl.kcp.co.kr/gw/enc/v1/payment"
+
+
+class KcpApprovalAPIView(APIView):
     """
-    Subscription(구독) 정보를 관리하는 ViewSet
+    KCP 승인 처리 API (빌링키 발급)
     """
-    serializer_class = SubscriptionSerializer
-    authentication_classes = [JWTAuthentication]
-    permission_classes = [IsAuthenticated]
 
-    def get_queryset(self):
-        """현재 로그인한 사용자의 구독 정보만 조회"""
-        return Subscription.objects.filter(user=self.request.user)
-    
-    def create (self, request):
-        """
-        구독 신청 API
-        - BillingKey 저장 및 갱신
-        - 구독 정보 업데이트
-        - 첫 결제 처리 및 이후 결제 스케줄링
-        """
-        user = request.user
-        imp_uid = request.data.get("imp_uid")
-        customer_uid = request.data.get("customer_uid")
-        merchant_uid = request.data.get("merchant_uid")
-        plan = request.data.get("plan")
+    def post(self, request):
+        print("📌 [DEBUG] KCP 승인 처리 API 호출")
 
-        #print("🔹 [SubscriptionViewSet.subscribe] 요청 데이터:", request.data)
+        approval_key = request.data.get("approval_key")
+        order_no = request.data.get("order_no")
 
-        # ✅ `plan`에 따른 가격 설정
-        plan_prices = {
-            "BASIC": 9900,
-            "ENTERPRISE": 500000,
+        if not approval_key or not order_no:
+            print("❌ [ERROR] approval_key 또는 order_no 값이 없습니다.")
+            return Response({"error": "approval_key 및 order_no 값이 필요합니다."}, status=status.HTTP_400_BAD_REQUEST)
+
+        payload = {
+            "tran_cd": "00300001",  # ✅ KCP 배치키(빌링키) 발급 트랜잭션 코드
+            "site_cd": settings.KCP_SITE_CD,
+            "approval_key": approval_key,
+            "order_no": order_no,
         }
-        price = plan_prices.get(plan)
 
-        if not all([imp_uid, customer_uid, merchant_uid, plan, price]):
-            return Response(
-                {"success": False, "message": "필수 요청 데이터가 누락되었습니다."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        headers = {
+            "Content-Type": "application/json"
+        }
+
+        print(f"📌 [DEBUG] KCP 승인 요청 데이터 (JSON): {payload}")
 
         try:
-            with transaction.atomic():
-                # ✅ BillingKey 저장 또는 업데이트
-                billing_key, created = BillingKey.objects.update_or_create(
-                    user=user,
-                    defaults={
-                        "customer_uid": customer_uid,
-                        "merchant_uid": merchant_uid,
-                        "imp_uid": imp_uid,
-                        "plan": plan,
-                        "amount": price,
-                        "is_active": True,
-                    },
-                )
-                billing_key.created_at = timezone.now()
-                billing_key.save()
+            response = requests.post(KCP_BILLING_URL, json=payload, headers=headers)
+            print(f"📌 [DEBUG] KCP API 응답 코드: {response.status_code}")
+            print(f"📌 [DEBUG] KCP API 응답 데이터: {response.text}")
 
-                user.billing_key = billing_key
-                user.save(update_fields=["billing_key"])
+            result = response.json()
 
-                # ✅ 12개월 예약 결제 스케줄링 실행
-                schedule_payments_for_user(user)
+            if result.get("res_cd") == "0000":
+                print(f"✅ [SUCCESS] 빌링키 발급 완료 - Billing Key: {result.get('billing_key')}")
+                return Response({"billing_key": result.get("billing_key")}, status=status.HTTP_200_OK)
+            else:
+                print(f"❌ [ERROR] 빌링키 발급 실패 - 응답 데이터: {result}")
+                return Response({"error": "빌링키 발급 실패", "details": result}, status=status.HTTP_400_BAD_REQUEST)
 
-                # ✅ 다음 결제일 설정
-                next_billing = (
-                    PaymentHistory.objects.filter(
-                        user=user, billing_key=billing_key, status="scheduled"
-                    )
-                    .order_by("scheduled_at")
-                    .first()
-                )
-                next_billing_date = (
-                    next_billing.scheduled_at.date()
-                    if next_billing
-                    else timezone.now().date() + relativedelta(months=1)
-                )
-
-                # ✅ 구독 정보 생성 또는 업데이트
-                subscription, _ = Subscription.objects.update_or_create(
-                    user=user,
-                    defaults={
-                        "plan": plan,
-                        "is_active": True,
-                        "next_billing_date": next_billing_date,
-                        "billing_key": billing_key,
-                    },
-                )
-
-                # ✅ 첫 번째 즉시 결제 내역 저장
-                payment_history = PaymentHistory.objects.create(
-                    user=user,
-                    billing_key=billing_key,
-                    imp_uid=imp_uid,
-                    merchant_uid=merchant_uid,
-                    merchant_name=f"{plan} 구독 결제",
-                    amount=price,
-                    status="paid",
-                    scheduled_at=None,
-                    created_at=timezone.now(),
-                )
-
-                return Response(
-                    {
-                        "success": True,
-                        "message": "구독 신청이 성공적으로 완료되었습니다.",
-                        "billing_key_data": BillingKeySerializer(billing_key).data,
-                        "subscription_data": SubscriptionSerializer(subscription).data,
-                        "payment_history_data": {
-                            "merchant_name": payment_history.merchant_name,
-                            "amount": str(payment_history.amount),
-                            "status": payment_history.status,
-                            "created_at": payment_history.created_at.strftime(
-                                "%Y-%m-%d %H:%M:%S"
-                            ),
-                        },
-                    },
-                    status=status.HTTP_201_CREATED,
-                )
+        except requests.RequestException as e:
+            print(f"❌ [ERROR] KCP 요청 실패: {str(e)}")
+            return Response({"error": f"KCP 요청 실패: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         except Exception as e:
-            print(f"❌ [ERROR] 구독 신청 중 오류 발생: {e}")
-            return Response(
-                {"success": False, "message": f"오류 발생: {str(e)}"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
+            print(f"❌ [ERROR] 서버 내부 오류: {str(e)}")
+            return Response({"error": f"서버 내부 오류: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-    def retrieve(self, request, *args, **kwargs):
-        """
-        사용자의 구독 정보를 조회하는 API
-        - 사용자의 구독 정보(Subscription)와 카드 정보(card_info)를 반환
-        """
-        try:
-            subscription = (
-                request.user.subscription
-            )  # 현재 로그인한 사용자의 구독 정보 가져오기
-            serializer = self.get_serializer(
-                subscription
-            )  # 구독 정보를 Serializer를 통해 변환
-            card_info = get_card_info(request.user)  # 사용자의 카드 정보 가져오기
-            return Response(
-                {
-                    "subscription": serializer.data,  # 구독 정보 응답 데이터
-                    "card_info": card_info,  # 카드 정보 응답 데이터
-                },
-                status=status.HTTP_200_OK,
-            )
-        except (
-            Subscription.DoesNotExist
-        ):  # 사용자가 구독 정보를 가지고 있지 않은 경우 예외 처리
-            return Response(
-                {"error": "구독 정보 없음"}, status=status.HTTP_404_NOT_FOUND
-            )
 
-    def destroy(self, request, *args, **kwargs):
-        """
-        ✅ 사용자가 구독을 해지하면 BillingKey의 `deactivation_date`만 설정
-        ✅ 실제 예약 결제 취소는 `deactivate_expired_billing_keys()`에서 처리
-        """
-        try:
-            subscription = request.user.subscription
+class KcpPaymentAPIView(APIView):
+    """
+    KCP 최초 결제 및 빌링키 발급 API
+    """
 
-            if not subscription.is_active:
-                return Response({"message": "이미 해지된 구독입니다."}, status=400)
-
-            next_billing_date = subscription.next_billing_date
-            billing_key = BillingKey.objects.filter(user=request.user, is_active=True).first()
-
-            if billing_key:
-                # ✅ BillingKey의 `deactivation_date`만 설정 (실제 취소는 이후 실행)
-                billing_key.deactivation_date = next_billing_date
-                billing_key.save()
-                
-            last_available_date = next_billing_date - timedelta(days=1)
-
-            return Response({"message": f"구독이 해지되었습니다. \n {last_available_date}까지 이용 가능합니다."}, status=200)
-
-        except Subscription.DoesNotExist:
-            return Response({"error": "구독 정보 없음"}, status=404)
-        
-    @action(detail=False, methods=['post'])
-    def restore(self, request):
-        """
-        구독을 복구하는 API (해지 취소)
-        - BillingKey의 deactivation_date를 None으로 설정
-        - 구독 상태 유지 (is_active 변경 없음)
-        - 기존 결제 스케줄 유지
-        """
+    def post(self, request):
+        print("📌 [DEBUG] KCP 결제 API 요청 시작")
 
         try:
-            subscription = request.user.subscription
-            billing_key = BillingKey.objects.filter(user=request.user).first()
+            site_cd = settings.KCP_TEST_SITE_CD
+            tran_cd = "00300001"  # 배치키 요청 코드 (공식 문서 참조)
+            kcp_cert_info = request.data.get("kcp_cert_info")
+            enc_data = request.data.get("enc_data")
+            enc_info = request.data.get("enc_info")
 
-            # 🔎 BillingKey 및 Subscription 상태 확인
-            '''
-            print(f"🔹 현재 구독 상태: is_active={subscription.is_active}")
-            print(f"🔹 BillingKey 존재 여부: {billing_key is not None}")
-            print(f"🔹 BillingKey 해지 예정일: {billing_key.deactivation_date}")
-            '''
+            print(f"📌 [DEBUG] site_cd: {site_cd}")
+            print(f"📌 [DEBUG] tran_cd: {tran_cd}")
 
-            if not billing_key:
-                print("❌ [ERROR] BillingKey 없음")
-                return Response(
-                    {"error": "결제 수단 정보를 찾을 수 없습니다."}, 
-                    status=status.HTTP_404_NOT_FOUND
-                )
+            if not (kcp_cert_info and enc_data and enc_info):
+                print("❌ [ERROR] 인증 데이터가 부족합니다.")
+                return Response({"error": "kcp_cert_info, enc_data, enc_info 값이 필요합니다."}, status=status.HTTP_400_BAD_REQUEST)
 
-            # ✅ 해지 취소 가능 여부 체크 (billing_key.deactivation_date 값 확인)
-            if billing_key.deactivation_date is None:
-                return Response(
-                    {"message": "이미 활성화된 구독이며, 해지 예정이 없습니다."}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+            # ✅ JSON으로 요청할 데이터 생성
+            payload = {
+                "tran_cd": tran_cd,
+                "kcp_cert_info": kcp_cert_info,
+                "site_cd": site_cd,
+                "enc_data": enc_data,
+                "enc_info": enc_info
+            }
 
-            with transaction.atomic():
-                # 🔄 BillingKey 복구 (해지 예약 취소)
-                billing_key.deactivation_date = None
-                billing_key.is_active = True
-                billing_key.save()
+            headers = {
+                "Content-Type": "application/json"
+            }
 
-                # 🔍 다음 결제일 유지 (해지 예약이 취소된 것이므로 변경 X)
-                next_billing = (
-                    PaymentHistory.objects.filter(
-                        user=request.user,
-                        billing_key=billing_key,
-                        status="scheduled"
-                    )
-                    .order_by("scheduled_at")
-                    .first()
-                )
+            print(f"📌 [DEBUG] KCP API 요청 데이터 (JSON): {json.dumps(payload, indent=4, ensure_ascii=False)}")
 
-                next_billing_date = (
-                    next_billing.scheduled_at.date()
-                    if next_billing
-                    else subscription.next_billing_date
-                )
+            # ✅ JSON 형식으로 API 요청
+            response = requests.post(KCP_BILLING_URL, json=payload, headers=headers)
 
-                # 🔄 구독 정보 업데이트 (is_active 변경 X, 기존 결제일 유지)
-                subscription.next_billing_date = next_billing_date
-                subscription.save()
-                subscription.refresh_from_db()
+            print(f"📌 [DEBUG] KCP API 응답 코드: {response.status_code}")
+            print(f"📌 [DEBUG] KCP API 응답 데이터: {response.text}")
 
-                return Response({
-                    "message": f"구독 해지가 취소되었습니다.",
-                    "subscription": SubscriptionSerializer(subscription).data
-                }, status=status.HTTP_200_OK)
-
-        except Subscription.DoesNotExist:
-            return Response(
-                {"error": "구독 정보를 찾을 수 없습니다."}, 
-                status=status.HTTP_404_NOT_FOUND
-            )
-        except Exception as e:
-            return Response(
-                {"error": f"구독 해지 취소 중 오류가 발생했습니다: {str(e)}"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-
-
-    @action(detail=False, methods=['post'])
-    def update_billing_key(self, request):
-        """
-        사용자의 결제 카드(BillingKey)를 변경하는 API
-        1. 기존 예약 결제를 취소
-        2. 새로운 BillingKey를 저장
-        3. 새로운 결제 스케줄을 등록
-        """
-        try:
-            user = request.user  
-            imp_uid = request.data.get("imp_uid")
-            new_customer_uid = request.data.get("customer_uid")
-
-            #print("🔍 [DEBUG] 요청 데이터:", request.data)
-
-            if not new_customer_uid:
-                print("❌ [ERROR] 새 결제 수단 정보가 없습니다.")
-                return Response(
-                    {"success": False, "message": "새 결제 수단 정보가 없습니다."},
-                    status=400,
-                )
-
-            access_token = get_portone_access_token()
-
-            # 카드 정보 검증
-            verified_payment = verify_payment(imp_uid, access_token)
-            if not verified_payment:
-                return Response(
-                    {"success": False, "message": "카드 검증에 실패했습니다."},
-                    status=400,
-                )
-
-            # 기존 BillingKey 가져오기
-            billing_key = get_object_or_404(BillingKey, user=user)
-
-            success = False  # 트랜잭션 성공 여부를 추적하기 위한 플래그
-            
             try:
-                with transaction.atomic():
-                    # ✅ 새로운 BillingKey 업데이트
-                    old_customer_uid = billing_key.customer_uid  # 기존 UID 저장
-                    billing_key.customer_uid = new_customer_uid  
-                    billing_key.save()
-                    
-                    success = True  # 모든 작업이 성공적으로 완료됨
+                result = response.json()
+            except json.JSONDecodeError:
+                print("❌ [ERROR] 응답이 JSON 형식이 아님!")
+                return Response({"error": "KCP API 응답이 올바르지 않습니다."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-            except Exception as e:
-                print(f"❌ [ERROR] 결제 취소 또는 스케줄링 중 오류 발생: {str(e)}")
-                # 트랜잭션이 자동으로 롤백됨
-                
-                if not success:  # 트랜잭션이 실패한 경우에만 BillingKey 복구
-                    try:
-                        # 새로운 트랜잭션에서 BillingKey 복구
-                        with transaction.atomic():
-                            billing_key.refresh_from_db()  # 최신 데이터로 리프레시
-                            billing_key.customer_uid = old_customer_uid
-                            billing_key.save()
-                    except Exception as recovery_error:
-                        print(f"❌ [ERROR] BillingKey 복구 중 오류 발생: {str(recovery_error)}")
-                
-                raise e  # 원래 예외를 다시 발생시킴
+            if result.get("res_cd") == "0000":
+                print(f"✅ [SUCCESS] 배치키 발급 완료 - Batch Key: {result.get('batch_key')}")
+                return Response({"batch_key": result.get("batch_key")}, status=status.HTTP_200_OK)
+            else:
+                print(f"❌ [ERROR] 배치키 발급 실패 - 응답 데이터: {result}")
+                return Response({"error": result.get("res_msg")}, status=status.HTTP_400_BAD_REQUEST)
 
-            return Response(
-                {
-                    "success": True,
-                    "message": "카드 정보가 성공적으로 변경되고, 새로운 결제 스케줄이 등록되었습니다.",
-                },
-                status=200,
-            )
-
-        except ValidationError as ve:
-            print(f"❌ [ERROR] 데이터 검증 오류 발생: {str(ve)}")
-            return Response({"success": False, "message": str(ve)}, status=400)
+        except requests.RequestException as e:
+            print(f"❌ [ERROR] KCP 요청 실패: {str(e)}")
+            return Response({"error": f"결제 요청 실패: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         except Exception as e:
-            print(f"❌ [ERROR] 카드 변경 처리 중 오류 발생: {str(e)}")
-            return Response(
-                {
-                    "success": False,
-                    "message": f"카드 변경 처리 중 오류가 발생했습니다: {str(e)}",
-                },
-                status=500,
-            )
+            print(f"❌ [ERROR] 서버 내부 오류: {str(e)}")
+            return Response({"error": f"서버 내부 오류: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+class SubscriptionViewSet(viewsets.ViewSet):
+    """
+    KCP 정기 결제 API (ViewSet)
+    """
 
+    def create(self, request):
+        site_cd = settings.KCP_SITE_CD
+        order_no = request.data.get("order_no")
+        billing_key = request.data.get("billing_key")
+        amount = request.data.get("amount")
+
+        if not order_no or not billing_key or not amount:
+            return Response({"error": "필수 데이터가 누락되었습니다."}, status=status.HTTP_400_BAD_REQUEST)
+
+        payload = {
+            "site_cd": site_cd,
+            "order_no": order_no,
+            "billing_key": billing_key,
+            "amount": amount,
+            "currency": "KRW",
+            "action": "pay"
+        }
+
+        try:
+            response = requests.post(KCP_BILLING_URL, data=payload)
+            result = response.json()
+
+            if result.get("result") == "success":
+                return Response({"success": True}, status=status.HTTP_200_OK)
+            else:
+                return Response({"error": "정기 결제 실패"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        except requests.RequestException as e:
+            return Response({"error": f"정기 결제 요청 실패: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class PaymentHistoryView(APIView):

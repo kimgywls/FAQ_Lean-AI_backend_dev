@@ -2,6 +2,7 @@ from rest_framework import serializers
 from .models import User, Store, ServiceRequest, Menu, BillingKey, Subscription, PaymentHistory
 from django.contrib.auth.hashers import make_password
 from django.conf import settings
+from datetime import date
 import re
 import logging
 
@@ -47,7 +48,8 @@ class PaymentHistorySerializer(serializers.ModelSerializer):
 
 # 유저 관련 시리얼라이저
 class UserSerializer(serializers.ModelSerializer):
-    subscription = SubscriptionSerializer()
+    billing_key = BillingKeySerializer(required=False, allow_null=True)
+    dob = serializers.DateField(format="%Y-%m-%d", input_formats=["%Y-%m-%d", "%y%m%d"], required=False)
 
     class Meta:
         model = User
@@ -62,16 +64,20 @@ class UserSerializer(serializers.ModelSerializer):
             "profile_photo",
             "created_at",
             "marketing",
-            "subscription",
+            "billing_key",
         ]
         extra_kwargs = {
-            "password": {"write_only": True},  # 비밀번호는 쓰기 전용으로 설정
+            "password": {"write_only": True, "required": False, "allow_null": True},
             "email": {"required": False},  # 이메일은 필수가 아님
         }
 
     # 사용자명 검증 (정규식을 사용하여 소문자와 숫자만 허용)
     def validate_username(self, value):
-        if not re.match(r"^[a-z][a-z0-9]{3,11}$", value):
+        
+        if value.startswith("naver_") or value.startswith("kakao_"):
+            return value  # 소셜 로그인 사용자는 검증 제외
+        
+        if not re.match(r"^[a-z][a-z0-9]{3,11}$", value):  # 4~12자 제한
             raise serializers.ValidationError(
                 "아이디는 영문 소문자로 시작하며, 영문 소문자와 숫자만을 포함한 4~12자여야 합니다."
             )
@@ -79,6 +85,13 @@ class UserSerializer(serializers.ModelSerializer):
 
     # 비밀번호 검증 (길이와 다양한 문자 포함 여부)
     def validate_password(self, value):
+        """
+        비밀번호 검증 
+        소셜 로그인일 경우 None 허용
+        """
+        if value is None:
+            return ""  # 🔥 None이면 빈 문자열 반환 (오류 방지)
+        
         if len(value) < 8 or len(value) > 20:
             raise serializers.ValidationError(
                 "비밀번호는 8자에서 20자 사이여야 합니다."
@@ -96,6 +109,28 @@ class UserSerializer(serializers.ModelSerializer):
             )
 
         return value
+    
+    # 생년월일 YYYY-MM-DD
+    def validate_dob(self, value):
+        """
+        `YYMMDD` 형식을 `YYYY-MM-DD`로 변환
+        """
+        if isinstance(value, str) and len(value) == 6:  # YYMMDD 형태인 경우
+            try:
+                year = int(value[:2])
+                month = int(value[2:4])
+                day = int(value[4:6])
+
+                # 2000년대 출생인지 1900년대 출생인지 판단
+                year += 2000 if year < 30 else 1900  # 30년 이전이면 2000년대, 이후면 1900년대
+
+                return f"{year}-{month:02d}-{day:02d}"
+            
+            except ValueError:
+                raise serializers.ValidationError("잘못된 생년월일 형식입니다. YYMMDD 또는 YYYY-MM-DD 형식이어야 합니다.")
+
+        return value  # 이미 YYYY-MM-DD 형식이면 그대로 유지
+
 
     # 프로필 사진 검증 (파일 형식과 크기)
     def validate_profile_photo(self, value):
@@ -106,17 +141,29 @@ class UserSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(error_message)
         return value
 
-    # 비밀번호를 해시 처리하여 저장
+
     def create(self, validated_data):
-        validated_data["password"] = make_password(validated_data["password"])
+        """
+        사용자 생성: 비밀번호가 None이면 설정하지 않음
+        """
+        password = validated_data.pop("password", None)
+
+        if password:
+            validated_data["password"] = make_password(password)  # 비밀번호가 있으면 해시 처리
+        else:
+            validated_data["password"] = ""  # 🔥 None이 아닌 빈 문자열로 설정
+
         return super().create(validated_data)
 
 
 # 스토어 관련 시리얼라이저
 class StoreSerializer(serializers.ModelSerializer):
+    user = serializers.PrimaryKeyRelatedField(read_only=True)
+    
     class Meta:
         model = Store
         fields = "__all__"
+        
 
     # 배너 이미지 검증 (빈 값은 허용하며, 파일 형식과 크기 검증)
     def validate_banner(self, value):
@@ -130,6 +177,14 @@ class StoreSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"banner": error_message})
         return value
 
+    def create(self, validated_data):
+        user = self.context.get("user")  # 🔥 context에서 user 가져오기
+        if not user:
+            raise serializers.ValidationError({"user": "User가 제공되지 않았습니다."})  # 🚨 예외 처리
+
+        validated_data["user"] = user  # 🔥 user 값을 validated_data에 추가
+        return super().create(validated_data)
+    
 
 # 로그인 요청에 사용하는 시리얼라이저
 class LoginSerializer(serializers.Serializer):
