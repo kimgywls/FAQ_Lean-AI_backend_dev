@@ -8,6 +8,7 @@ from rest_framework.response import Response
 from rest_framework import status
 import logging, os, uuid, json
 from django.conf import settings
+from urllib.parse import unquote
 from ..models import Store
 from ..serializers import StoreSerializer
 
@@ -36,16 +37,24 @@ class StoreViewSet(ViewSet):
         """
         특정 매장(slug 기반) 출력 API
         """
-        slug = request.query_params.get('slug') 
-        if not slug:
-            return Response({"error": "slug가 필요합니다."}, status=400)
+        slug_param = request.query_params.get('slug')
+        if not slug_param:
+            return Response({"error": "slug(또는 이름) 파라미터가 필요합니다."}, status=400)
+        
+        # URL에 한글이나 공백이 있을 수 있으므로 디코딩
+        decoded_param = unquote(slug_param)
 
-        try:
-            store = Store.objects.get(slug=slug)
-            serializer = StoreSerializer(store)
-            return Response(serializer.data)
-        except Store.DoesNotExist:
-            return Response({"error": "해당 slug의 매장을 찾을 수 없습니다."}, status=404)
+        # 1) store_name으로 먼저 검색
+        store = Store.objects.filter(store_name=decoded_param).first()
+        # 2) 없으면 slug로 검색
+        if not store:
+            store = Store.objects.filter(slug=decoded_param).first()
+
+        if not store:
+            return Response({"error": "해당 매장을 찾을 수 없습니다."}, status=404)
+
+        serializer = StoreSerializer(store)
+        return Response(serializer.data, status=200)
         
 
     def update(self, request, pk=None):
@@ -127,24 +136,34 @@ class FeedViewSet(ViewSet):
     @action(detail=False, methods=['get'], permission_classes=[AllowAny])
     def list_images_by_slug(self, request):
         """
-        특정 매장(slug 기반)의 피드 출력 API
+        특정 매장(가게명 혹은 slug 기반)의 피드 출력 API
+        - 예: /api/store/list_images_by_slug?slug=무물 떡볶이
         """
-        slug = request.query_params.get('slug') 
-        if not slug:
-            return Response({"error": "slug가 필요합니다."}, status=400)
+        slug_or_name = request.query_params.get('slug')
+        if not slug_or_name:
+            return Response({"error": "slug(또는 가게명) 파라미터가 필요합니다."}, status=400)
+
+        # 한글 혹은 공백이 들어간 경우를 위해 디코딩
+        decoded_param = unquote(slug_or_name)
 
         try:
-            if slug:
-                store = Store.objects.get(slug=slug)
-                store_id = store.store_id
-                logger.debug(f"Store found by slug. Store ID: {store_id}")
-            else:
-                logger.error("Either slug or store_id must be provided.")
-                return Response({'error': 'slug 또는 store_id 중 하나가 필요합니다.'}, status=status.HTTP_400_BAD_REQUEST)
+            # 1) store_name으로 먼저 검색
+            store = Store.objects.filter(store_name=decoded_param).first()
+            # 2) 없으면 slug로 검색
+            if not store:
+                store = Store.objects.filter(slug=decoded_param).first()
+
+            if not store:
+                logger.error("Store does not exist for provided store_name or slug.")
+                return Response({'error': '스토어를 찾을 수 없습니다.'}, status=status.HTTP_404_NOT_FOUND)
+
+            store_id = store.store_id
+            logger.debug(f"Store found. Store ID: {store_id}")
 
             feed_dir = os.path.join(settings.MEDIA_ROOT, f"uploads/store_{store_id}/feed")
             logger.debug(f"Feed directory path: {feed_dir}")
 
+            # 폴더가 없으면 생성
             if not os.path.exists(feed_dir):
                 logger.info(f"Feed directory does not exist. Creating directory: {feed_dir}")
                 os.makedirs(feed_dir, exist_ok=True)
@@ -156,22 +175,20 @@ class FeedViewSet(ViewSet):
                 {
                     'id': os.path.splitext(file)[0].rsplit('_', 1)[-1],
                     'name': os.path.splitext(file)[0].rsplit('_', 1)[0],
-                    'ext' : os.path.splitext(file)[1],
+                    'ext': os.path.splitext(file)[1],
                     'path': os.path.join('uploads', f'store_{store_id}/feed', file).replace("\\", "/")
                 }
-                for file in files if file.lower().endswith(('.png', '.jpg', '.jpeg', '.gif'))
+                for file in files
+                if file.lower().endswith(('.png', '.jpg', '.jpeg', '.gif'))
             ]
             logger.debug(f"Image files to return: {image_files}")
 
             return Response({'images': image_files}, status=status.HTTP_200_OK)
-        except Store.DoesNotExist:
-            logger.error("Store does not exist for provided slug or store_id.")
-            return Response({'error': '스토어를 찾을 수 없습니다.'}, status=status.HTTP_404_NOT_FOUND)
+
         except Exception as e:
             logger.exception(f"Unexpected error occurred: {e}")
             return Response({'error': '알 수 없는 오류가 발생했습니다.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
+        
 
     @action(detail=False, methods=['post'])
     def upload_image(self, request):

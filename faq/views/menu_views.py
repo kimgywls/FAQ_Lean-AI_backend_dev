@@ -60,25 +60,35 @@ class MenuViewSet(ViewSet):
     @action(detail=False, methods=['get'], permission_classes=[AllowAny])
     def list_menus_by_slug(self, request):
         """
-        특정 매장(slug 기반)의 메뉴 출력 API
+        특정 매장(가게명 혹은 slug 기반)의 메뉴 출력 API
+        - 예: /api/menus/list_menus_by_slug/?slug=무물 떡볶이
         """
-        slug = request.query_params.get('slug') 
-        if not slug:
-            return Response({"error": "slug가 필요합니다."}, status=400)
+        slug_or_name = request.query_params.get('slug')
+        if not slug_or_name:
+            return Response({"error": "slug(또는 가게명) 파라미터가 필요합니다."}, status=400)
+
+        # 한글이나 공백 인코딩을 고려해 디코딩
+        decoded_value = unquote(slug_or_name)
 
         try:
-            if slug:
-                store = Store.objects.get(slug=slug)
-            else:
-                return Response({'error': 'slug가 필요합니다.'}, status=status.HTTP_400_BAD_REQUEST)
+            # 1) store_name으로 검색
+            store = Store.objects.filter(store_name=decoded_value).first()
+            # 2) 없으면 slug로 검색
+            if not store:
+                store = Store.objects.filter(slug=decoded_value).first()
+
+            if not store:
+                return Response({"error": "스토어를 찾을 수 없습니다."}, status=404)
 
             menus = Menu.objects.filter(store=store)
             serializer = MenuSerializer(menus, many=True)
-            return Response(serializer.data, status=status.HTTP_200_OK)
+            return Response(serializer.data, status=200)
 
-        except Store.DoesNotExist:
-            return Response({'error': '스토어를 찾을 수 없습니다.'}, status=status.HTTP_404_NOT_FOUND)
-        
+        except Exception as e:
+            # 예상치 못한 예외 처리
+            logger.exception(f"list_menus_by_slug error: {e}")
+            return Response({'error': '서버 오류가 발생했습니다.'}, status=500)
+   
 
     def create(self, request):
         """

@@ -14,7 +14,7 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
-import random, logging, os, shutil, requests
+import random, logging, os, shutil, requests, re 
 from send_sms import send_aligo_sms
 from ..models import User, Store, ServiceRequest, Menu, Subscription, PaymentHistory
 from ..serializers import (
@@ -108,6 +108,8 @@ class SignupView(APIView):
                 {"success": False, "message": "서버 오류 발생"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+
 
 # 로그인 API
 class LoginView(APIView):
@@ -716,10 +718,20 @@ class OAuthLoginAPIView(APIView):
 
             # ✅ phone 정규화 (네이버: mobile, 카카오: phone_number)
             def normalize_phone(phone):
-                if phone and phone.startswith("+82"):
-                    return "010" + phone[3:]
-                return phone.replace("-", "").strip()  # 하이픈 제거
-
+                if not phone:
+                    return None
+                # 모든 숫자만 추출 (공백, 하이픈, 기타 문자는 제거)
+                digits = re.sub(r'\D', '', phone)
+                
+                # 만약 국가 코드 '82'로 시작하고 총 자리수가 11자리 이상이면 '82' 제거
+                if digits.startswith("82") and len(digits) > 10:
+                    digits = digits[2:]
+                
+                # 만약 10자리라면 앞에 '0' 붙이기
+                if len(digits) == 10:
+                    digits = "0" + digits
+                    
+                return digits
             user_info["phone"] = normalize_phone(user_info.get("phone", ""))
 
             # 생년월일 정규화
@@ -781,7 +793,7 @@ class OAuthLoginAPIView(APIView):
             if provider == "kakao":
                 response = requests.get("https://kapi.kakao.com/v2/user/me", headers=headers)
                 data = response.json()
-                #print(f"kakao response data: {data}")
+                print(f"kakao response data: {data}")
 
                 kakao_account = data.get("kakao_account", {})
 
