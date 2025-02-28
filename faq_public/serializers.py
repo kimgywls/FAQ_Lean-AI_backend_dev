@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Public_User, Public, Public_ServiceRequest, Public_Complaint, Public_Department
+from .models import Public_User, Public, Public_ServiceRequest, Public_Complaint, Public_Department, Public_BillingKey, Public_Subscription, Public_PaymentHistory
 from rest_framework.exceptions import ValidationError
 from django.contrib.auth.hashers import make_password
 import re
@@ -15,13 +15,33 @@ def validate_file(value, allowed_extensions, max_file_size, error_message_prefix
     return None
 
 
+class Public_BillingKeySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Public_BillingKey
+        fields = "__all__"
+
+
+class Public_SubscriptionSerializer(serializers.ModelSerializer):
+    billing_key = Public_BillingKeySerializer(read_only=True)  # BillingKey 데이터를 포함
+
+    class Meta:
+        model = Public_Subscription
+        fields = ["id", "plan", "is_active", "next_billing_date", "billing_key"]
+
+
+class Public_PaymentHistorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Public_PaymentHistory
+        fields = "__all__"
+        
+
 # 유저 관련 시리얼라이저
 class PublicUserSerializer(serializers.ModelSerializer):
     department = serializers.CharField(write_only=True)  # department_name을 받아 처리
     class Meta:
         model = Public_User
         fields = ['user_id', 'username', 'password', 'name', 'dob', 'phone', 'email', 'profile_photo', 
-                  'created_at', 'marketing', 'public', 'department']
+                'created_at', 'marketing', 'public', 'department']
         extra_kwargs = {
             'password': {'write_only': True},
             'email': {'required': False},
@@ -72,9 +92,11 @@ class PublicUserSerializer(serializers.ModelSerializer):
 
 # 공공기관 관련 시리얼라이저
 class PublicSerializer(serializers.ModelSerializer):
+    billing_key = Public_BillingKeySerializer(required=False, allow_null=True)
+    
     class Meta:
         model = Public
-        fields = ['public_id', 'public_name', 'public_address', 'public_tel', 'logo', 'opening_hours', 'qr_code', 'agent_id', 'updated_at', 'slug']
+        fields = ['public_id', 'public_name', 'public_address', 'public_tel', 'logo', 'opening_hours', 'qr_code', 'agent_id', 'updated_at', 'slug', 'billing_key']
 
     def validate_logo(self, value):
         if value in [None, '']:

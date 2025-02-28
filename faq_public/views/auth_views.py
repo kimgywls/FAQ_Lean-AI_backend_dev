@@ -11,7 +11,7 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
-import random, logging
+import random, logging, requests
 from send_sms import send_aligo_sms
 from ..models import Public_User, Public, Public_Department, Public_ServiceRequest, Public_Complaint
 from ..serializers import (
@@ -28,7 +28,7 @@ logger = logging.getLogger('faq')
 # 회원가입 API
 class SignupView(APIView):
     permission_classes = [AllowAny]
-     
+
     def post(self, request):
         # 사용자 정보 받아오기
         user_data = {
@@ -109,7 +109,25 @@ class LoginView(APIView):
     def post(self, request):
         username = request.data.get('username')
         password = request.data.get('password')
+        captcha_token  = request.data.get("captcha")
         
+        # CAPTCHA 검증
+        captcha_valid, score = self.verify_captcha(captcha_token)
+        if not captcha_valid:
+            return Response({"error": "CAPTCHA 검증 실패"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # reCAPTCHA v3 점수에 따른 액션
+        if score < 0.3:  # 0.3 미만이면 로그인 차단
+            return Response(
+                {"error": "의심스러운 활동이 감지되었습니다.", "login_lock": True},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        
+        if score < 0.5:  # 0.5 미만이면 reCAPTCHA v2 요청
+            return Response(
+                {"error": "의심스러운 활동이 감지되었습니다.", "require_captcha": True},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         try:
             user = Public_User.objects.get(username=username)
             
@@ -129,15 +147,36 @@ class LoginView(APIView):
                 
                 return Response({'access': access_token, 'public_id': public_id})
             else:
-                return Response({"error": "아이디 또는 비밀번호가 일치하지 않습니다.\n 다시 시도해 주세요."}, status=status.HTTP_401_UNAUTHORIZED)
+                return Response({"error": "아이디 또는 비밀번호가 일치하지 않습니다.\n다시 시도해 주세요."}, status=status.HTTP_401_UNAUTHORIZED)
 
         except Public_User.DoesNotExist:
-            return Response({"error": "아이디 또는 비밀번호가 일치하지 않습니다.\n 다시 시도해 주세요."}, status=status.HTTP_401_UNAUTHORIZED)
-        
+            return Response(
+                {"error": "입력하신 아이디로 가입된 계정이 없습니다.\n회원가입 후 로그인해 주세요."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+            
         except Exception as e:
-            #logger.debug(f"Unhandled error: {e}")
-            return Response({"error": "로그인 처리 중 문제가 발생했습니다. 관리자에게 문의하세요."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-               
+            logger.error(f"로그인 오류: {str(e)}")
+            return Response(
+                {"error": "서버 오류 발생"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+            
+    def verify_captcha(self, token):
+        """
+        CAPTCHA 검증 로직 (Google reCAPTCHA v3 사용)
+        """
+        url = "https://www.google.com/recaptcha/api/siteverify"
+        data = {"secret": settings.RECAPTCHA_V3_SECRET_KEY, "response": token}
+        response = requests.post(url, data=data).json()
+        print(f"google capcha response : {response}")
+        success = response.get("success", False)
+        score = response.get("score", 0)
+
+        # reCAPTCHA 점수 확인 로그 추가
+        print(f"[reCAPTCHA] Success: {success}, Score: {score}")
+
+        return success, score
 
 # Other User APIs
 # 사용자명 중복 확인 API
@@ -397,10 +436,10 @@ class DeactivateAccountView(APIView):
         탈퇴한 사용자의 ServiceRequest 데이터를 익명화 처리.
         """
         ServiceRequests = Public_ServiceRequest.objects.filter(user=user)
-        for ServiceRequest in ServiceRequests:
-            ServiceRequest.title = f'익명화된 제목_{ServiceRequest.id}'
-            ServiceRequest.content = '익명화된 내용'
-            ServiceRequest.file = None  # 파일 삭제
-            ServiceRequest.save()
+        for service_request in ServiceRequests:
+            service_request.title = f'익명화된 제목_{service_request.id}'
+            service_request.content = '익명화된 내용'
+            service_request.file = None  # 파일 삭제
+            service_request.save()
 
  

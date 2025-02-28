@@ -62,7 +62,6 @@ class User(AbstractBaseUser):
         max_length=1, choices=[("Y", "Yes"), ("N", "No")], default="N"
     )
     push_token = models.CharField(max_length=255, null=True, blank=True)
-
     billing_key = models.OneToOneField(
         "BillingKey",
         on_delete=models.SET_NULL,
@@ -72,7 +71,7 @@ class User(AbstractBaseUser):
     )
 
     is_deactivation_requested = models.BooleanField(default=False)  # 탈퇴 요청 여부
-    deactivated_at = models.DateTimeField(null=True, blank=True)    # 탈퇴 완료된 시간간
+    deactivated_at = models.DateTimeField(null=True, blank=True)    # 탈퇴 완료된 시간
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     is_superuser = models.BooleanField(default=False)
