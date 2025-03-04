@@ -178,6 +178,8 @@ class LoginView(APIView):
 
         return success, score
 
+
+
 # Other User APIs
 # 사용자명 중복 확인 API
 class UsernameCheckView(APIView):

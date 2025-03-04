@@ -8,6 +8,7 @@ from rest_framework.response import Response
 from rest_framework import status
 import logging, os, uuid, json
 from django.conf import settings
+from django.shortcuts import get_object_or_404
 from urllib.parse import unquote
 from ..models import Store
 from ..serializers import StoreSerializer
@@ -18,6 +19,23 @@ logger = logging.getLogger('faq')
 class StoreViewSet(ViewSet):
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
+    
+    def list(self, request):
+        """
+        사용자가 가진 모든 매장을 반환하는 API
+        """
+        print(f"🔍 [DEBUG] 요청한 유저: {request.user}")
+        
+        if not request.user or request.user.is_anonymous:
+            return Response({"error": "인증된 사용자만 접근할 수 있습니다."}, status=status.HTTP_401_UNAUTHORIZED)
+
+        stores = Store.objects.filter(user=request.user)
+        if not stores.exists():
+            return Response({"error": "등록된 매장이 없습니다."}, status=status.HTTP_404_NOT_FOUND)
+
+        store_data = StoreSerializer(stores, many=True).data
+        return Response({"stores": store_data}, status=status.HTTP_200_OK)
+    
 
     def retrieve(self, request, pk=None):
         """
@@ -76,7 +94,59 @@ class StoreViewSet(ViewSet):
             return Response(serializer.data, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
+    
+    @action(detail=False, methods=['post'])
+    def add(self, request):
+        '''
+        새 스토어 추가
+        '''
+        data = request.data
         
+        # 필수 필드 확인
+        required_fields = ["store_category", "store_name", "store_address"]
+        for field in required_fields:
+            if field not in data or not data[field].strip():
+                return Response({"detail": f"{field} 필드는 필수입니다."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            store = Store.objects.create(
+                store_category=data["store_category"],
+                store_name=data["store_name"],
+                store_address=data["store_address"],
+                user = request.user 
+            )
+            serializer = StoreSerializer(store)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            return Response({"detail": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+    
+    def destroy(self, request, pk=None):
+        """
+        특정 스토어 삭제 API
+        DELETE /api/stores/delete/<store_id>/
+        """
+        store = get_object_or_404(Store, pk=pk)
+
+        # 요청자가 해당 스토어의 소유자인지 확인 (예제: store.owner 필드 체크)
+        if store.user != request.user:
+            return Response(
+                {"detail": "해당 스토어를 삭제할 권한이 없습니다."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        delete_reason = request.data.get("delete_reason", "사용자에 의한 삭제")
+
+        # 삭제 수행 (소프트 삭제 적용 가능)
+        store.delete()
+
+        return Response(
+            {"detail": f"스토어 '{store.store_name}'가 삭제되었습니다.", "delete_reason": delete_reason},
+            status=status.HTTP_204_NO_CONTENT
+        )
+
+
 
 
 class FeedViewSet(ViewSet):

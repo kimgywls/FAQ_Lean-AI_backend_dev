@@ -24,7 +24,7 @@ class UserProfileView(APIView):
         logger.debug(f"UserProfileView POST called by user: {user}")
 
         try:
-            store = Store.objects.get(user=user)
+            store = Store.objects.filter(user=user).first()
             logger.debug(f"Store found for user {user.username}: {store}")
         except Store.DoesNotExist:
             store = None
