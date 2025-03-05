@@ -34,7 +34,7 @@ class UserProfileView(APIView):
         profile_photo_url = user.profile_photo.url if user.profile_photo else ""
         qr_code_path = os.path.join(settings.MEDIA_ROOT, f"qr_codes/public_qr_{public.public_id}.png") if public else None
         qr_code_url = (
-            f"/media/qr_codes/qr_{public.public_id}.png"
+            f"/media/qr_codes/public_qr_{public.public_id}.png"
             if qr_code_path and os.path.exists(qr_code_path)
             else ""
         )
