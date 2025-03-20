@@ -88,7 +88,7 @@ class MenuViewSet(ViewSet):
             # 예상치 못한 예외 처리
             logger.exception(f"list_menus_by_slug error: {e}")
             return Response({'error': '서버 오류가 발생했습니다.'}, status=500)
-   
+
 
     def create(self, request):
         """
@@ -122,6 +122,7 @@ class MenuViewSet(ViewSet):
 
         return Response({'created_menus': created_menus}, status=status.HTTP_201_CREATED)
     
+
 
     def update(self, request, pk=None):
         """
@@ -174,8 +175,7 @@ class MenuViewSet(ViewSet):
         except Menu.DoesNotExist:
             return Response({'error': '메뉴를 찾을 수 없습니다.'}, status=status.HTTP_404_NOT_FOUND)  
             
-         
-        
+            
 
     @action(detail=False, methods=['get'])
     def view_category(self, request):

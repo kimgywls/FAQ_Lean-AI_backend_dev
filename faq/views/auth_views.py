@@ -264,17 +264,17 @@ class PasswordResetView(APIView):
 # User Verification APIs
 # 인증 코드 전송 API
 class SendVerificationCodeView(APIView):
+    
     def generate_verification_code(self):
         # 6자리 인증 코드 생성
         return str(random.randint(100000, 999999))
 
     def post(self, request):
-        # 인증 코드 유형에 따라 유저 확인
         user_id = request.data.get("user_id")
         phone_number = request.data.get("phone")
         code_type = request.data.get("type")
 
-        # logger.debug(f"phone_number: {phone_number}, code_type: {code_type}, user_id: {user_id}")
+        print(f"📌 [DEBUG] 받은 데이터 → user_id: {user_id}, phone: {phone_number}, type: {code_type}")
 
         # 필수 정보가 없으면 오류 반환
         if (
@@ -282,6 +282,7 @@ class SendVerificationCodeView(APIView):
             or not code_type
             or (code_type not in ["findID", "signup"] and not user_id)
         ):
+            print(f"⚠ [ERROR] 필수 정보 누락")
             return Response(
                 {"success": False, "message": "필수 정보를 입력해주세요."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -289,10 +290,10 @@ class SendVerificationCodeView(APIView):
 
         # 인증 코드 유형별 처리
         if code_type == "findID":
-            # 전화번호로 사용자 확인
             try:
                 user = User.objects.get(phone=phone_number)
             except User.DoesNotExist:
+                print(f"⚠ [ERROR] 해당 전화번호({phone_number})로 등록된 사용자 없음")
                 return Response(
                     {
                         "success": False,
@@ -302,10 +303,10 @@ class SendVerificationCodeView(APIView):
                 )
 
         elif code_type == "findPW":
-            # 사용자 ID와 전화번호로 사용자 확인
             try:
                 user = User.objects.get(username=user_id, phone=phone_number)
             except User.DoesNotExist:
+                print(f"⚠ [ERROR] 아이디({user_id}) 또는 전화번호({phone_number}) 불일치")
                 return Response(
                     {
                         "success": False,
@@ -315,15 +316,16 @@ class SendVerificationCodeView(APIView):
                 )
 
         elif code_type == "mypage":
-            # mypage에서 전화번호가 이미 등록된 번호인지 확인
             try:
                 user = User.objects.get(username=user_id)
                 if user.phone == phone_number:
+                    print(f"⚠ [ERROR] {user_id}의 기존 번호({phone_number})와 동일")
                     return Response(
                         {"success": False, "message": "이미 등록된 핸드폰 번호입니다."},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
             except User.DoesNotExist:
+                print(f"⚠ [ERROR] 해당 ID({user_id})로 등록된 사용자 없음")
                 return Response(
                     {
                         "success": False,
@@ -335,6 +337,7 @@ class SendVerificationCodeView(APIView):
         else:
             # 회원가입 등 기타 경우: 전화번호 중복 확인
             if User.objects.filter(phone=phone_number, is_active=True).exists():
+                print(f"⚠ [ERROR] {phone_number}는 이미 가입된 전화번호")
                 return Response(
                     {"success": False, "message": "이미 가입된 전화번호입니다."},
                     status=status.HTTP_400_BAD_REQUEST,
@@ -345,24 +348,28 @@ class SendVerificationCodeView(APIView):
         cache_key = f"{code_type}_verification_code_{phone_number}"
         cache.set(cache_key, verification_code, timeout=300)
 
-        logger.debug(f"New Verification Code Set: {verification_code}")
+        print(f"✅ [DEBUG] 인증 코드 생성 완료 → {verification_code}")
+        print(f"✅ [DEBUG] 캐시 저장 완료 → key: {cache_key}")
 
         # SMS 전송 API 호출
         sms_success = send_aligo_sms(
             receiver=phone_number, message=f"인증 번호는 [{verification_code}]입니다."
         )
 
+        print(f"📡 [DEBUG] SMS 전송 API 결과 → {sms_success}")
+
         if sms_success:
-            logger.info(f"인증 번호가 성공적으로 전송되었습니다.")
+            print(f"✅ [INFO] 인증 번호 전송 성공 → {phone_number}")
             return Response({"success": True, "message": "인증 번호가 발송되었습니다."})
         else:
-            logger.error(f"{phone_number}로 인증 번호 발송 실패")
+            print(f"❌ [ERROR] {phone_number}로 인증 번호 발송 실패")
             return Response(
                 {"success": False, "message": "인증 번호 발송에 실패했습니다."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
-
-
+            
+            
+            
 # 인증 코드 검증 API
 class VerifyCodeView(APIView):
     def post(self, request):
