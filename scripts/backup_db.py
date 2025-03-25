@@ -15,10 +15,18 @@ django.setup()
 
 from django.conf import settings
 
-# 데이터베이스 백업
+# 데이터베이스 백업 경로 설정
 if not os.path.exists(settings.BACKUP_DIR):
     os.makedirs(settings.BACKUP_DIR)
 
-backup_file = os.path.join(settings.BACKUP_DIR, f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.sqlite3")
-shutil.copy(settings.DATABASE_PATH, backup_file)
-print(f"백업이 완료되었습니다: {backup_file}")
+# 설정된 데이터베이스들을 순회하면서 백업
+for db_alias, db_config in settings.DATABASES.items():
+    if 'NAME' in db_config:  # 데이터베이스 경로 확인
+        db_path = db_config['NAME']
+        db_filename = os.path.basename(db_path)  # 예: faq.sqlite3 또는 faq_public.sqlite3
+        backup_filename = f"{db_filename}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.sqlite3"
+        backup_file = os.path.join(settings.BACKUP_DIR, backup_filename)
+        
+        # 데이터베이스 파일 복사 (백업)
+        shutil.copy(db_path, backup_file)
+        print(f"백업이 완료되었습니다: {backup_file}")

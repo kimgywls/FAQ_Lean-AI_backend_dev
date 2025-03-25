@@ -15,6 +15,7 @@ my_settings.py
 backups/
 faq/migrations/ 
 faq_public/migrations/ 
+faq_corp/migrations/
 webhook/
 # If your build process includes running collectstatic, then you probably don't need or want to include staticfiles/
 # in your Git repository. Update and uncomment the following line accordingly.
