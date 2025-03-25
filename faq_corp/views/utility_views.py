@@ -96,7 +96,7 @@ class QrCodeImageView(APIView):
             #logger.debug(f"Request data: {request.data}")
             #logger.debug(f"Request user: {request.user}")
 
-            corp_id = request.data.get('corp_id')  # 요청에서 corp_id 가져오기
+            corp_id = request.data.get('store_id')  # 요청에서 store_id 가져오기
             if not corp_id:
                 #logger.debug("corp_id 요청에 없습니다.")
                 return Response({'error': 'corp_id 필요합니다.'}, status=400)

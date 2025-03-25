@@ -88,47 +88,54 @@ class GenerateQrCodeView(APIView):
 
 # QR 코드 이미지를 반환하는 API
 class QrCodeImageView(APIView):
-    authentication_classes = [JWTAuthentication] 
-    permission_classes = [IsAuthenticated]  # 인증된 사용자만 접근 가능
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         try:
+            # 요청 데이터 로깅
+            #logger.debug(f"Request data: {request.data}")
+            #logger.debug(f"Request user: {request.user}")
+
+            store_id = request.data.get('store_id')  # 요청에서 store_id 가져오기
+            if not store_id:
+                #logger.debug("store_id 요청에 없습니다.")
+                return Response({'error': 'store_id 필요합니다.'}, status=400)
+
             # 사용자의 스토어 정보 가져오기
-            store = Store.objects.get(user=request.user)
-            #logger.debug(f"Store found for user: {request.user.username}, store name: {store.store_name}")
+            store = Store.objects.get(store_id=store_id, user=request.user)
+            #logger.debug(f"Public object found: {store}")
 
             if store.qr_code:
-                #logger.debug(f"Store has QR code: {store.qr_code}")
+                store_name = store.store_name
+                qr_code_path = store.qr_code.lstrip('/')  # 경로에서 앞의 '/' 제거
+                #logger.debug(f"QR code path: {qr_code_path}")
 
-                # QR 코드 경로 처리
-                qr_code_path = store.qr_code.lstrip('/')  # 앞의 '/' 제거
                 if qr_code_path.startswith('media/'):
                     qr_code_url = request.build_absolute_uri(f'/{qr_code_path}')
                 else:
                     qr_code_url = request.build_absolute_uri(settings.MEDIA_URL + qr_code_path)
 
-                #logger.debug(f"Final QR code URL: {qr_code_url}")
-
-                # QR 코드에 인코딩된 실제 URL 생성
                 qr_content_url = f'https://mumulai.com/storeIntroduction/{store.slug}'
-                #logger.debug(f"QR Content URL: {qr_content_url}")
+
+                #logger.debug(f"QR code URL: {qr_code_url}, Content URL: {qr_content_url}")
 
                 return Response({
-                    'store_name': store.store_name,
+                    'store_name': store_name,
                     'qr_code_image_url': qr_code_url,
                     'qr_content_url': qr_content_url
                 }, status=200)
             else:
-                logger.debug(f"No QR code found for store: {store.store_name}")
+                #logger.debug("QR 코드가 없습니다.")
                 return Response({'qr_code_image_url': None}, status=200)
 
         except Store.DoesNotExist:
-            logger.debug(f"Store not found for user: {request.user.username}")
-            return Response({'error': 'Store not found'}, status=404)
+            #logger.debug(f"store object not found for store_id: {store_id}, user: {request.user}")
+            return Response({'error': 'store not found'}, status=404)
         except Exception as e:
-            logger.error(f"Unexpected error occurred in QrCodeImageView: {e}")
+            logger.error(f"Unexpected error: {e}", exc_info=True)  # 예외 정보 전체 로깅
             return Response({'error': 'An unexpected error occurred.'}, status=500)
-
+        
 
 # FAQ 통계 API
 class StatisticsView(APIView):

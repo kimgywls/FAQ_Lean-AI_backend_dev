@@ -97,7 +97,7 @@ class QrCodeImageView(APIView):
             #logger.debug(f"Request data: {request.data}")
             #logger.debug(f"Request user: {request.user}")
 
-            public_id = request.data.get('public_id')  # 요청에서 public_id 가져오기
+            public_id = request.data.get('store_id')  # 요청에서 store_id 가져오기
             if not public_id:
                 #logger.debug("public_id가 요청에 없습니다.")
                 return Response({'error': 'public_id가 필요합니다.'}, status=400)
